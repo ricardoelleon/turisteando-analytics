@@ -19,7 +19,7 @@ const analyticsDataClient = new BetaAnalyticsDataClient({
 const PROPERTY_ID = process.env.PROPERTY_ID || '487082948';
 
 // ========================================
-// HELPER FUNCTIONS
+// HELPER FUNCTIONS - MEJORADOS Y DINÁMICOS
 // ========================================
 
 async function runReport(dimensions, metrics, dateRange, orderBy = null, limit = 10) {
@@ -55,12 +55,35 @@ async function runReportWithFilter(dimensions, metrics, dateRange, filter, order
   return await analyticsDataClient.runReport(request);
 }
 
+// Función helper para extraer valores de forma segura
+function extractValue(row, index, defaultValue = '') {
+  return row.dimensionValues?.[index]?.value || defaultValue;
+}
+
+function extractMetric(row, index, defaultValue = 0) {
+  return parseInt(row.metricValues?.[index]?.value) || defaultValue;
+}
+
+// ========================================
+// MIDDLEWARE PARA LOGGING
+// ========================================
+
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
+
 // ========================================
 // BASIC ENDPOINTS
 // ========================================
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    propertyId: PROPERTY_ID,
+    version: '2.0.0-dynamic'
+  });
 });
 
 // Overview - KPIs generales
@@ -68,33 +91,25 @@ app.get('/api/analytics/overview', async (req, res) => {
   try {
     const { startDate = '7daysAgo', endDate = 'today' } = req.query;
     
-    const [activeUsersReport, newUsersReport, sessionsReport, pageViewsReport, durationReport, bounceReport, engagementReport] = await Promise.all([
-      runReport([], ['activeUsers'], { startDate, endDate }),
-      runReport([], ['newUsers'], { startDate, endDate }),
-      runReport([], ['sessions'], { startDate, endDate }),
-      runReport([], ['screenPageViews'], { startDate, endDate }),
-      runReport([], ['averageSessionDuration'], { startDate, endDate }),
-      runReport([], ['bounceRate'], { startDate, endDate }),
-      runReport([], ['engagementRate'], { startDate, endDate }),
-    ]);
+    const [report] = await runReport(
+      [], 
+      ['activeUsers', 'newUsers', 'sessions', 'screenPageViews', 'averageSessionDuration', 'bounceRate', 'engagementRate'], 
+      { startDate, endDate }
+    );
     
-    const getValue = (report, metricIndex = 0) => {
-      if (report[0].rows && report[0].rows[0]) {
-        return parseFloat(report[0].rows[0].metricValues[metricIndex].value) || 0;
-      }
-      return 0;
-    };
+    const row = report.rows?.[0];
+    const getValue = (idx, mult = 1) => parseFloat(row?.metricValues?.[idx]?.value || 0) * mult;
     
     res.json({
       success: true,
       data: {
-        activeUsers: getValue(activeUsersReport),
-        newUsers: getValue(newUsersReport),
-        sessions: getValue(sessionsReport),
-        pageViews: getValue(pageViewsReport),
-        avgSessionDuration: getValue(durationReport),
-        bounceRate: getValue(bounceReport) * 100,
-        engagementRate: getValue(engagementReport),
+        activeUsers: getValue(0),
+        newUsers: getValue(1),
+        sessions: getValue(2),
+        pageViews: getValue(3),
+        avgSessionDuration: getValue(4),
+        bounceRate: getValue(5, 100),
+        engagementRate: getValue(6),
       }
     });
   } catch (error) {
@@ -107,13 +122,13 @@ app.get('/api/analytics/users-by-day', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    const report = await runReport(['date'], ['activeUsers', 'newUsers', 'sessions'], { startDate, endDate }, null, 30);
+    const [report] = await runReport(['date'], ['activeUsers', 'newUsers', 'sessions'], { startDate, endDate }, null, 30);
     
-    const data = report[0].rows?.map(row => ({
-      date: row.dimensionValues[0].value,
-      users: parseInt(row.metricValues[0].value) || 0,
-      newUsers: parseInt(row.metricValues[1].value) || 0,
-      sessions: parseInt(row.metricValues[2].value) || 0,
+    const data = report.rows?.map(row => ({
+      date: extractValue(row, 0),
+      users: extractMetric(row, 0),
+      newUsers: extractMetric(row, 1),
+      sessions: extractMetric(row, 2),
     })) || [];
     
     res.json({ success: true, data });
@@ -122,22 +137,22 @@ app.get('/api/analytics/users-by-day', async (req, res) => {
   }
 });
 
-// By platform (Android/iOS)
+// By platform
 app.get('/api/analytics/by-platform', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    const report = await runReport(['platform'], ['activeUsers', 'newUsers', 'sessions', 'screenPageViews'], { startDate, endDate }, 'activeUsers');
+    const [report] = await runReport(['platform'], ['activeUsers', 'newUsers', 'sessions', 'screenPageViews'], { startDate, endDate }, 'activeUsers');
     
-    const platforms = report[0].rows?.map(row => ({
-      platform: row.dimensionValues[0].value,
-      users: parseInt(row.metricValues[0].value) || 0,
-      newUsers: parseInt(row.metricValues[1].value) || 0,
-      sessions: parseInt(row.metricValues[2].value) || 0,
-      screens: parseInt(row.metricValues[3].value) || 0,
+    const data = report.rows?.map(row => ({
+      platform: extractValue(row, 0),
+      users: extractMetric(row, 0),
+      newUsers: extractMetric(row, 1),
+      sessions: extractMetric(row, 2),
+      screens: extractMetric(row, 3),
     })) || [];
     
-    res.json({ success: true, data: platforms });
+    res.json({ success: true, data });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
@@ -148,15 +163,15 @@ app.get('/api/analytics/by-country', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    const report = await runReport(['country'], ['activeUsers', 'newUsers'], { startDate, endDate }, 'activeUsers', 15);
+    const [report] = await runReport(['country'], ['activeUsers', 'newUsers'], { startDate, endDate }, 'activeUsers', 15);
     
-    const countries = report[0].rows?.map(row => ({
-      country: row.dimensionValues[0].value,
-      users: parseInt(row.metricValues[0].value) || 0,
-      newUsers: parseInt(row.metricValues[1].value) || 0,
+    const data = report.rows?.map(row => ({
+      country: extractValue(row, 0),
+      users: extractMetric(row, 0),
+      newUsers: extractMetric(row, 1),
     })) || [];
     
-    res.json({ success: true, data: countries });
+    res.json({ success: true, data });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
@@ -167,118 +182,127 @@ app.get('/api/analytics/top-events', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    const report = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 30);
+    const [report] = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 30);
     
-    const events = report[0].rows?.map(row => ({
-      event: row.dimensionValues[0].value,
-      count: parseInt(row.metricValues[0].value) || 0,
-      users: parseInt(row.metricValues[1].value) || 0,
+    const data = report.rows?.map(row => ({
+      event: extractValue(row, 0),
+      count: extractMetric(row, 0),
+      users: extractMetric(row, 1),
     })) || [];
     
-    res.json({ success: true, data: events });
+    res.json({ success: true, data });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
-// SCREEN VIEWS - Pantallas más vistas
+// Top screens
 app.get('/api/analytics/top-screens', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    const report = await runReport(['screenName'], ['screenPageViews', 'activeUsers'], { startDate, endDate }, 'screenPageViews', 20);
+    const [report] = await runReport(['screenName'], ['screenPageViews', 'activeUsers'], { startDate, endDate }, 'screenPageViews', 20);
     
-    const screens = report[0].rows?.map(row => ({
-      screen: row.dimensionValues[0].value,
-      views: parseInt(row.metricValues[0].value) || 0,
-      users: parseInt(row.metricValues[1].value) || 0,
+    const data = report.rows?.map(row => ({
+      screen: extractValue(row, 0),
+      views: extractMetric(row, 0),
+      users: extractMetric(row, 1),
     })) || [];
     
-    res.json({ success: true, data: screens });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// ACQUISITION - Fuentes de tráfico
-app.get('/api/analytics/acquisition', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    const report = await runReport(['sessionDefaultChannelGroup'], ['sessions', 'activeUsers'], { startDate, endDate }, 'sessions', 10);
-    
-    const sources = report[0].rows?.map(row => ({
-      source: row.dimensionValues[0].value,
-      sessions: parseInt(row.metricValues[0].value) || 0,
-      users: parseInt(row.metricValues[1].value) || 0,
-    })) || [];
-    
-    res.json({ success: true, data: sources });
+    res.json({ success: true, data });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
 // ========================================
-// CUSTOM EVENTS - TURISTEANDO APP (ACTUALIZADO)
+// ENDPOINTS DINÁMICOS - TURISTEANDO APP
 // ========================================
 
-// CATEGORIAS - Turismo, Restaurantes, Comercios, Hoteles
-// Basado en los eventos: turismo_clicked, restaurante_clicked, comercio_clicked, hotel_clicked
-app.get('/api/analytics/categorias', async (req, res) => {
+// EVENTOS DESCUBIERTOS AUTOMÁTICAMENTE
+// Este endpoint descubre todos los eventos personalizados y sus parámetros
+app.get('/api/analytics/eventos-descubiertos', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Buscar todos los eventos *_clicked
-    const report = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 50);
+    // 1. Obtener todos los eventos
+    const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 100);
     
-    // Filtrar solo los eventos de categoría
-    const categoriasEvents = ['turismo_clicked', 'restaurante_clicked', 'comercio_clicked', 'hotel_clicked', 'restaurantes_clicked', 'hoteles_clicked'];
+    const eventos = [];
     
-    const categorias = report[0].rows
-      ?.filter(row => categoriasEvents.includes(row.dimensionValues[0].value))
-      .map(row => {
-        let nombre = row.dimensionValues[0].value.replace('_clicked', '');
-        return {
-          categoria: nombre.charAt(0).toUpperCase() + nombre.slice(1),
-          views: parseInt(row.metricValues[0].value) || 0,
-          users: parseInt(row.metricValues[1].value) || 0,
-        };
-      }) || [];
+    // 2. Para cada evento personalizado, intentar descubrir sus parámetros
+    const customEventPrefixes = ['pueblo_', 'category_', 'entity_', 'abrir_', 'sos_', 'button_', 'filter', 'search'];
     
-    res.json({ success: true, data: categorias });
+    for (const row of eventsReport.rows || []) {
+      const eventName = extractValue(row, 0);
+      const count = extractMetric(row, 0);
+      
+      // Verificar si es un evento personalizado de Turisteando
+      const isCustom = customEventPrefixes.some(prefix => eventName.startsWith(prefix)) ||
+                       eventName.includes('_action') ||
+                       eventName.includes('_clicked') ||
+                       eventName.includes('_view');
+      
+      if (isCustom && count > 0) {
+        eventos.push({
+          event: eventName,
+          count: count
+        });
+      }
+    }
+    
+    res.json({ success: true, data: eventos });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
-// PUEBLOS - Vistas por pueblo
-// Intenta obtener de customEvent:pueblo_nombre o screenName
+// PUEBLOS - Dinámico
 app.get('/api/analytics/pueblos', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Intentar obtener pantallas que contengan "Pueblo" o nombres de pueblos conocidos
-    const report = await runReport(['screenName'], ['screenPageViews', 'activeUsers'], { startDate, endDate }, 'screenPageViews', 50);
+    // Intentar obtener de pueblo_view con customEvent:pueblo_nombre
+    let pueblos = [];
     
-    // Filtrar pantallas que parezcan ser de pueblos
-    const pueblos = report[0].rows
-      ?.filter(row => {
-        const screen = row.dimensionValues[0].value.toLowerCase();
-        return screen.includes('pueblo') || 
-               screen.includes('raquira') || 
-               screen.includes('tinjaca') ||
-               screen.includes('villa') ||
-               screen.includes('mongui') ||
-               screen.includes('paipa') ||
-               screen.includes('tica') ||
-               screen.includes('sugamuxi');
-      })
-      .map(row => ({
-        pueblo: row.dimensionValues[0].value,
-        views: parseInt(row.metricValues[0].value) || 0,
-        users: parseInt(row.metricValues[1].value) || 0,
+    try {
+      const [report] = await runReportWithFilter(
+        ['customEvent:pueblo_nombre'],
+        ['eventCount', 'activeUsers'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'pueblo_view' }
+          }
+        },
+        'eventCount', 30
+      );
+      
+      pueblos = report.rows?.map(row => ({
+        pueblo: extractValue(row, 0),
+        views: extractMetric(row, 0),
+        users: extractMetric(row, 1),
       })) || [];
+    } catch (e) {
+      // Fallback: buscar en screenName
+      try {
+        const [screenReport] = await runReport(['screenName'], ['screenPageViews', 'activeUsers'], { startDate, endDate }, 'screenPageViews', 50);
+        
+        pueblos = screenReport.rows
+          ?.filter(row => {
+            const screen = extractValue(row, 0).toLowerCase();
+            return screen.includes('pueblo_') || screen.includes('Screen');
+          })
+          .map(row => ({
+            pueblo: extractValue(row, 0).replace('Pueblo_', '').replace('Screen', ''),
+            views: extractMetric(row, 0),
+            users: extractMetric(row, 1),
+          })) || [];
+      } catch (e2) {
+        pueblos = [];
+      }
+    }
     
     res.json({ success: true, data: pueblos });
   } catch (error) {
@@ -286,44 +310,152 @@ app.get('/api/analytics/pueblos', async (req, res) => {
   }
 });
 
-// ENTIDADES - Lugares más consultados
-// Combina todos los *_clicked events con sus parámetros
-app.get('/api/analytics/entidades', async (req, res) => {
+// CATEGORÍAS - Dinámico con parámetros
+app.get('/api/analytics/categorias', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Intentar obtener customEvent:entity_name si existe
-    let entidades = [];
+    // Intentar obtener category_clicked con customEvent:category_name
+    let categorias = [];
     
     try {
-      const report = await runReportWithFilter(
-        ['customEvent:entity_name', 'eventName'],
+      const [report] = await runReportWithFilter(
+        ['customEvent:category_name', 'customEvent:pueblo_id'],
         ['eventCount', 'activeUsers'],
         { startDate, endDate },
         {
           filter: {
-            orGroup: {
-              filters: [
-                { fieldName: 'eventName', stringFilter: { value: 'turismo_clicked' } },
-                { fieldName: 'eventName', stringFilter: { value: 'restaurante_clicked' } },
-                { fieldName: 'eventName', stringFilter: { value: 'comercio_clicked' } },
-                { fieldName: 'eventName', stringFilter: { value: 'hotel_clicked' } },
-              ]
-            }
+            fieldName: 'eventName',
+            stringFilter: { value: 'category_clicked' }
           }
         },
-        'eventCount', 30
+        'eventCount', 50
       );
       
-      entidades = report[0].rows?.map(row => ({
-        entidad: row.dimensionValues[0].value,
-        categoria: row.dimensionValues[1].value.replace('_clicked', ''),
-        clicks: parseInt(row.metricValues[0].value) || 0,
-        users: parseInt(row.metricValues[1].value) || 0,
+      categorias = report.rows?.map(row => ({
+        categoria: extractValue(row, 0),
+        pueblo: extractValue(row, 1),
+        clicks: extractMetric(row, 0),
+        users: extractMetric(row, 1),
       })) || [];
     } catch (e) {
-      // Si falla, devolver datos de los eventos generales
-      entidades = [];
+      // Fallback: método anterior
+      const [eventsReport] = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 50);
+      
+      const categoriasEvents = ['turismo_clicked', 'restaurante_clicked', 'comercio_clicked', 'hotel_clicked', 'category_clicked'];
+      
+      categorias = eventsReport.rows
+        ?.filter(row => categoriasEvents.some(e => extractValue(row, 0).includes(e.replace('_clicked', ''))))
+        .map(row => {
+          let nombre = extractValue(row, 0).replace('_clicked', '');
+          return {
+            categoria: nombre.charAt(0).toUpperCase() + nombre.slice(1),
+            clicks: extractMetric(row, 0),
+            users: extractMetric(row, 1),
+          };
+        }) || [];
+    }
+    
+    res.json({ success: true, data: categorias });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// VISTA DE CATEGORÍAS (category_view)
+app.get('/api/analytics/categorias-vistas', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
+    
+    let vistas = [];
+    
+    try {
+      const [report] = await runReportWithFilter(
+        ['customEvent:category_name', 'customEvent:pueblo_id'],
+        ['eventCount', 'activeUsers'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'category_view' }
+          }
+        },
+        'eventCount', 50
+      );
+      
+      vistas = report.rows?.map(row => ({
+        categoria: extractValue(row, 0),
+        pueblo: extractValue(row, 1),
+        views: extractMetric(row, 0),
+        users: extractMetric(row, 1),
+      })) || [];
+    } catch (e) {
+      vistas = [];
+    }
+    
+    res.json({ success: true, data: vistas });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ENTIDADES (lugares) - Dinámico con todos los parámetros
+app.get('/api/analytics/entidades', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today', puebloId } = req.query;
+    
+    let entidades = [];
+    
+    // Construir filtro base
+    let filter = {
+      filter: {
+        fieldName: 'eventName',
+        stringFilter: { value: 'entity_clicked' }
+      }
+    };
+    
+    // Si hay puebloId, agregar filtro adicional
+    if (puebloId) {
+      filter = {
+        filter: {
+          andGroup: {
+            filters: [
+              { fieldName: 'eventName', stringFilter: { value: 'entity_clicked' } },
+              { fieldName: 'customEvent:pueblo_id', stringFilter: { value: puebloId } }
+            ]
+          }
+        }
+      };
+    }
+    
+    try {
+      const [report] = await runReportWithFilter(
+        ['customEvent:entity_name', 'customEvent:category_name', 'customEvent:pueblo_id'],
+        ['eventCount', 'activeUsers'],
+        { startDate, endDate },
+        filter,
+        'eventCount', 50
+      );
+      
+      entidades = report.rows?.map(row => ({
+        entidad: extractValue(row, 0),
+        categoria: extractValue(row, 1),
+        pueblo: extractValue(row, 2),
+        clicks: extractMetric(row, 0),
+        users: extractMetric(row, 1),
+      })) || [];
+    } catch (e) {
+      // Fallback: método anterior con eventos específicos
+      const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 100);
+      
+      const entityEvents = eventsReport.rows
+        ?.filter(row => extractValue(row, 0).includes('_clicked'))
+        .map(row => ({
+          entidad: extractValue(row, 0),
+          clicks: extractMetric(row, 0),
+        })) || [];
+      
+      entidades = entityEvents;
     }
     
     res.json({ success: true, data: entidades });
@@ -332,36 +464,84 @@ app.get('/api/analytics/entidades', async (req, res) => {
   }
 });
 
-// ACCIONES - Llamadas, WhatsApp, Mapas, etc.
-// Basado en eventos *_action
-app.get('/api/analytics/acciones', async (req, res) => {
+// DETALLES DE ENTIDADES (entity_detail_view)
+app.get('/api/analytics/entidades-detalles', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Intentar obtener customEvent:action si existe
-    let acciones = [];
+    let detalles = [];
     
     try {
-      const report = await runReportWithFilter(
-        ['customEvent:action', 'eventName'],
-        ['eventCount'],
+      const [report] = await runReportWithFilter(
+        ['customEvent:entity_name', 'customEvent:category_name', 'customEvent:pueblo_id'],
+        ['eventCount', 'activeUsers'],
         { startDate, endDate },
         {
           filter: {
             fieldName: 'eventName',
-            stringFilter: { matchType: 'CONTAINS', value: '_action' }
+            stringFilter: { value: 'screen_view' }
           }
         },
         'eventCount', 50
       );
       
-      acciones = report[0].rows?.map(row => ({
-        action: row.dimensionValues[0].value,
-        categoria: row.dimensionValues[1].value,
-        count: parseInt(row.metricValues[0].value) || 0,
+      // Filtrar solo los que tienen entity_name (vistas de detalle)
+      detalles = report.rows
+        ?.filter(row => extractValue(row, 0) && extractValue(row, 0) !== '(not set)')
+        .map(row => ({
+          entidad: extractValue(row, 0),
+          categoria: extractValue(row, 1),
+          pueblo: extractValue(row, 2),
+          views: extractMetric(row, 0),
+          users: extractMetric(row, 1),
+        })) || [];
+    } catch (e) {
+      detalles = [];
+    }
+    
+    res.json({ success: true, data: detalles });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ACCIONES - Dinámico con customEvent:action
+app.get('/api/analytics/acciones', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
+    
+    let acciones = [];
+    
+    try {
+      // Obtener acciones de entity_action
+      const [report] = await runReportWithFilter(
+        ['customEvent:action', 'customEvent:entity_name'],
+        ['eventCount'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'entity_action' }
+          }
+        },
+        'eventCount', 50
+      );
+      
+      acciones = report.rows?.map(row => ({
+        action: extractValue(row, 0),
+        entidad: extractValue(row, 1),
+        count: extractMetric(row, 0),
       })) || [];
     } catch (e) {
-      acciones = [];
+      // Fallback: buscar eventos que contengan action
+      const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 50);
+      
+      acciones = eventsReport.rows
+        ?.filter(row => extractValue(row, 0).includes('action') || extractValue(row, 0).includes('abrir_'))
+        .map(row => ({
+          action: extractValue(row, 0).replace('_action', '').replace('abrir_', ''),
+          count: extractMetric(row, 0),
+        })) || [];
     }
     
     res.json({ success: true, data: acciones });
@@ -370,92 +550,107 @@ app.get('/api/analytics/acciones', async (req, res) => {
   }
 });
 
-// Resumen de acciones por tipo
+// RESUMEN DE ACCIONES
 app.get('/api/analytics/acciones-resumen', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Obtener todos los eventos *_action
-    const report = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 50);
+    let resumen = [];
     
-    // Filtrar eventos de acción
-    const accionesNombres = {
-      'turismo_action': 'turismo',
-      'restaurante_action': 'restaurante',
-      'comercio_action': 'comercio',
-      'hotel_action': 'hotel',
-      'abrir_mapa': 'mapa',
-      'abrir_informacion': 'informacion',
-      'favorito_agregado': 'favorito',
-      'filter': 'filtro',
-      'button_clicked': 'boton',
-      'button_click': 'boton',
-    };
-    
-    const acciones = [];
-    
-    // Obtener detalles de cada acción
-    report[0].rows?.forEach(row => {
-      const eventName = row.dimensionValues[0].value;
-      const count = parseInt(row.metricValues[0].value) || 0;
-      
-      if (eventName.includes('_action') || eventName.includes('abrir_') || eventName === 'favorito_agregado' || eventName === 'filter') {
-        acciones.push({
-          action: eventName.replace('_action', '').replace('abrir_', ''),
-          count: count
-        });
-      }
-    });
-    
-    // También intentar obtener customEvent:action
     try {
-      const detailReport = await runReportWithFilter(
+      const [report] = await runReportWithFilter(
         ['customEvent:action'],
         ['eventCount'],
         { startDate, endDate },
         {
           filter: {
             fieldName: 'eventName',
-            stringFilter: { matchType: 'CONTAINS', value: 'action' }
+            stringFilter: { value: 'entity_action' }
           }
         },
         'eventCount', 30
       );
       
-      const customActions = detailReport[0].rows?.map(row => ({
-        action: row.dimensionValues[0].value,
-        count: parseInt(row.metricValues[0].value) || 0,
+      resumen = report.rows?.map(row => ({
+        action: extractValue(row, 0),
+        count: extractMetric(row, 0),
       })) || [];
-      
-      // Combinar resultados
-      customActions.forEach(ca => {
-        const existing = acciones.find(a => a.action === ca.action);
-        if (existing) {
-          existing.count += ca.count;
-        } else {
-          acciones.push(ca);
-        }
-      });
     } catch (e) {
-      // Ignorar error
+      resumen = [];
     }
     
-    res.json({ success: true, data: acciones });
+    res.json({ success: true, data: resumen });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
-// BÚSQUEDAS
+// MAPAS - Abrir mapa
+app.get('/api/analytics/mapas', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
+    
+    let mapas = [];
+    
+    // Mapas de pueblos
+    try {
+      const [puebloReport] = await runReportWithFilter(
+        ['customEvent:pueblo_nombre'],
+        ['eventCount'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'abrir_mapa_pueblo' }
+          }
+        },
+        'eventCount', 30
+      );
+      
+      mapas.push(...(puebloReport.rows?.map(row => ({
+        tipo: 'pueblo',
+        lugar: extractValue(row, 0),
+        count: extractMetric(row, 0),
+      })) || []));
+    } catch (e) {}
+    
+    // Mapas de lugares
+    try {
+      const [lugarReport] = await runReportWithFilter(
+        ['customEvent:lugar_nombre'],
+        ['eventCount'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'abrir_mapa' }
+          }
+        },
+        'eventCount', 30
+      );
+      
+      mapas.push(...(lugarReport.rows?.map(row => ({
+        tipo: 'lugar',
+        lugar: extractValue(row, 0),
+        count: extractMetric(row, 0),
+      })) || []));
+    } catch (e) {}
+    
+    res.json({ success: true, data: mapas });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// BÚSQUEDAS - Dinámico
 app.get('/api/analytics/busquedas', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Intentar obtener término de búsqueda
     let busquedas = [];
     
     try {
-      const report = await runReportWithFilter(
+      const [report] = await runReportWithFilter(
         ['customEvent:search_term'],
         ['eventCount'],
         { startDate, endDate },
@@ -468,33 +663,12 @@ app.get('/api/analytics/busquedas', async (req, res) => {
         'eventCount', 30
       );
       
-      busquedas = report[0].rows?.map(row => ({
-        query: row.dimensionValues[0].value,
-        count: parseInt(row.metricValues[0].value) || 0,
+      busquedas = report.rows?.map(row => ({
+        query: extractValue(row, 0),
+        count: extractMetric(row, 0),
       })) || [];
     } catch (e) {
-      // Intentar con filtro
-      try {
-        const filterReport = await runReportWithFilter(
-          ['customEvent:filter_value'],
-          ['eventCount'],
-          { startDate, endDate },
-          {
-            filter: {
-              fieldName: 'eventName',
-              stringFilter: { value: 'filter' }
-            }
-          },
-          'eventCount', 30
-        );
-        
-        busquedas = filterReport[0].rows?.map(row => ({
-          query: row.dimensionValues[0].value,
-          count: parseInt(row.metricValues[0].value) || 0,
-        })) || [];
-      } catch (e2) {
-        busquedas = [];
-      }
+      busquedas = [];
     }
     
     res.json({ success: true, data: busquedas });
@@ -503,32 +677,37 @@ app.get('/api/analytics/busquedas', async (req, res) => {
   }
 });
 
-// ERRORES
-app.get('/api/analytics/errores', async (req, res) => {
+// FILTROS
+app.get('/api/analytics/filtros', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Obtener app_exception events
-    const report = await runReportWithFilter(
-      ['customEvent:error_type', 'customEvent:firebase_screen'],
-      ['eventCount'],
-      { startDate, endDate },
-      {
-        filter: {
-          fieldName: 'eventName',
-          stringFilter: { value: 'app_exception' }
-        }
-      },
-      'eventCount', 20
-    );
+    let filtros = [];
     
-    const errores = report[0].rows?.map(row => ({
-      tipo: row.dimensionValues[0].value || 'Error desconocido',
-      pantalla: row.dimensionValues[1]?.value || 'N/A',
-      count: parseInt(row.metricValues[0].value) || 0,
-    })) || [];
+    try {
+      const [report] = await runReportWithFilter(
+        ['customEvent:filter_type', 'customEvent:filter_value'],
+        ['eventCount'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'filter' }
+          }
+        },
+        'eventCount', 30
+      );
+      
+      filtros = report.rows?.map(row => ({
+        tipo: extractValue(row, 0),
+        valor: extractValue(row, 1),
+        count: extractMetric(row, 0),
+      })) || [];
+    } catch (e) {
+      filtros = [];
+    }
     
-    res.json({ success: true, data: errores });
+    res.json({ success: true, data: filtros });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
@@ -539,12 +718,11 @@ app.get('/api/analytics/sos', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Intentar obtener eventos SOS
     let sos = [];
     
     try {
-      const report = await runReportWithFilter(
-        ['customEvent:sos_type'],
+      const [report] = await runReportWithFilter(
+        ['customEvent:sos_type', 'customEvent:action'],
         ['eventCount'],
         { startDate, endDate },
         {
@@ -556,9 +734,10 @@ app.get('/api/analytics/sos', async (req, res) => {
         'eventCount', 20
       );
       
-      sos = report[0].rows?.map(row => ({
-        tipo: row.dimensionValues[0].value,
-        count: parseInt(row.metricValues[0].value) || 0,
+      sos = report.rows?.map(row => ({
+        tipo: extractValue(row, 0),
+        action: extractValue(row, 1),
+        count: extractMetric(row, 0),
       })) || [];
     } catch (e) {
       sos = [];
@@ -570,84 +749,348 @@ app.get('/api/analytics/sos', async (req, res) => {
   }
 });
 
-// DASHBOARD COMPLETO - Todo en un endpoint
-app.get('/api/analytics/dashboard', async (req, res) => {
+// ERRORES
+app.get('/api/analytics/errores', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    const dateRange = { startDate, endDate };
     
-    // Ejecutar todos los reports en paralelo
+    let errores = [];
+    
+    try {
+      const [report] = await runReportWithFilter(
+        ['customEvent:error_type', 'customEvent:error_message'],
+        ['eventCount'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'app_error' }
+          }
+        },
+        'eventCount', 20
+      );
+      
+      errores = report.rows?.map(row => ({
+        tipo: extractValue(row, 0),
+        mensaje: extractValue(row, 1),
+        count: extractMetric(row, 0),
+      })) || [];
+    } catch (e) {
+      errores = [];
+    }
+    
+    res.json({ success: true, data: errores });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// BOTONES
+app.get('/api/analytics/botones', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
+    
+    let botones = [];
+    
+    try {
+      const [report] = await runReportWithFilter(
+        ['customEvent:item_name', 'customEvent:screen_name'],
+        ['eventCount'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'button_clicked' }
+          }
+        },
+        'eventCount', 30
+      );
+      
+      botones = report.rows?.map(row => ({
+        boton: extractValue(row, 0),
+        pantalla: extractValue(row, 1),
+        count: extractMetric(row, 0),
+      })) || [];
+    } catch (e) {
+      botones = [];
+    }
+    
+    res.json({ success: true, data: botones });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// COMPARTIR
+app.get('/api/analytics/compartir', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
+    
+    let compartir = [];
+    
+    try {
+      const [report] = await runReportWithFilter(
+        ['customEvent:entity_name', 'customEvent:share_method'],
+        ['eventCount'],
+        { startDate, endDate },
+        {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { value: 'share' }
+          }
+        },
+        'eventCount', 30
+      );
+      
+      compartir = report.rows?.map(row => ({
+        entidad: extractValue(row, 0),
+        metodo: extractValue(row, 1),
+        count: extractMetric(row, 0),
+      })) || [];
+    } catch (e) {
+      compartir = [];
+    }
+    
+    res.json({ success: true, data: compartir });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// ENDPOINT GENÉRICO DINÁMICO
+// Este endpoint permite consultar cualquier evento con cualquier parámetro
+// ========================================
+
+app.get('/api/analytics/custom', async (req, res) => {
+  try {
+    const { 
+      startDate = '30daysAgo', 
+      endDate = 'today',
+      eventName,           // Nombre del evento a filtrar
+      dimensions,          // Dimensiones separadas por coma (ej: "customEvent:pueblo_nombre,customEvent:category_name")
+      metrics = 'eventCount,activeUsers',  // Métricas por defecto
+      limit = 30
+    } = req.query;
+    
+    if (!eventName) {
+      return res.json({ 
+        success: false, 
+        error: 'eventName es requerido',
+        example: '/api/analytics/custom?eventName=pueblo_view&dimensions=customEvent:pueblo_nombre,customEvent:pueblo_id'
+      });
+    }
+    
+    const dimensionsList = dimensions ? dimensions.split(',').map(d => d.trim()) : [];
+    const metricsList = metrics.split(',').map(m => m.trim());
+    
+    const filter = {
+      filter: {
+        fieldName: 'eventName',
+        stringFilter: { value: eventName }
+      }
+    };
+    
+    const [report] = await runReportWithFilter(
+      dimensionsList,
+      metricsList,
+      { startDate, endDate },
+      filter,
+      'eventCount',
+      parseInt(limit)
+    );
+    
+    // Convertir resultados a objeto dinámico
+    const data = report.rows?.map(row => {
+      const obj = {};
+      dimensionsList.forEach((dim, idx) => {
+        // Extraer nombre limpio del parámetro
+        const cleanName = dim.replace('customEvent:', '').replace('firebase:', '');
+        obj[cleanName] = extractValue(row, idx);
+      });
+      metricsList.forEach((metric, idx) => {
+        const cleanName = metric === 'eventCount' ? 'count' : 
+                         metric === 'activeUsers' ? 'users' : metric;
+        obj[cleanName] = extractMetric(row, idx);
+      });
+      return obj;
+    }) || [];
+    
+    res.json({ 
+      success: true, 
+      eventName,
+      dimensions: dimensionsList,
+      metrics: metricsList,
+      data 
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// DASHBOARD COMPLETO - DINÁMICO
+// ========================================
+
+app.get('/api/analytics/dashboard', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today', puebloId } = req.query;
+    
+    // Ejecutar todas las consultas en paralelo
     const [
-      overviewData,
-      categoriasData,
-      accionesData,
-      platformsData,
-      countriesData,
-      topEventsData
-    ] = await Promise.all([
-      runReport([], ['activeUsers', 'newUsers', 'sessions', 'screenPageViews', 'averageSessionDuration', 'bounceRate', 'engagementRate'], dateRange),
-      runReport(['eventName'], ['eventCount', 'activeUsers'], dateRange, 'eventCount', 50),
-      runReport(['eventName'], ['eventCount'], dateRange, 'eventCount', 50),
-      runReport(['platform'], ['activeUsers', 'sessions'], dateRange, 'activeUsers', 5).catch(() => null),
-      runReport(['country'], ['activeUsers'], dateRange, 'activeUsers', 10).catch(() => null),
-      runReport(['eventName'], ['eventCount', 'activeUsers'], dateRange, 'eventCount', 30).catch(() => null)
+      overviewResult,
+      pueblosResult,
+      categoriasResult,
+      entidadesResult,
+      accionesResult,
+      mapasResult,
+      platformsResult,
+      countriesResult,
+      topEventsResult
+    ] = await Promise.allSettled([
+      runReport([], ['activeUsers', 'newUsers', 'sessions', 'screenPageViews', 'averageSessionDuration', 'bounceRate', 'engagementRate'], { startDate, endDate }).catch(() => null),
+      
+      // Pueblos
+      runReportWithFilter(
+        ['customEvent:pueblo_nombre'],
+        ['eventCount', 'activeUsers'],
+        { startDate, endDate },
+        { filter: { fieldName: 'eventName', stringFilter: { value: 'pueblo_view' } } },
+        'eventCount', 20
+      ).catch(() => null),
+      
+      // Categorías
+      runReportWithFilter(
+        ['customEvent:category_name', 'customEvent:pueblo_id'],
+        ['eventCount', 'activeUsers'],
+        { startDate, endDate },
+        { filter: { fieldName: 'eventName', stringFilter: { value: 'category_clicked' } } },
+        'eventCount', 20
+      ).catch(() => null),
+      
+      // Entidades
+      runReportWithFilter(
+        ['customEvent:entity_name', 'customEvent:category_name', 'customEvent:pueblo_id'],
+        ['eventCount', 'activeUsers'],
+        { startDate, endDate },
+        { filter: { fieldName: 'eventName', stringFilter: { value: 'entity_clicked' } } },
+        'eventCount', 30
+      ).catch(() => null),
+      
+      // Acciones
+      runReportWithFilter(
+        ['customEvent:action'],
+        ['eventCount'],
+        { startDate, endDate },
+        { filter: { fieldName: 'eventName', stringFilter: { value: 'entity_action' } } },
+        'eventCount', 20
+      ).catch(() => null),
+      
+      // Mapas
+      runReportWithFilter(
+        ['customEvent:lugar_nombre'],
+        ['eventCount'],
+        { startDate, endDate },
+        { filter: { fieldName: 'eventName', stringFilter: { matchType: 'CONTAINS', value: 'mapa' } } },
+        'eventCount', 20
+      ).catch(() => null),
+      
+      // Platforms
+      runReport(['platform'], ['activeUsers', 'sessions'], { startDate, endDate }, 'activeUsers', 5).catch(() => null),
+      
+      // Countries
+      runReport(['country'], ['activeUsers'], { startDate, endDate }, 'activeUsers', 10).catch(() => null),
+      
+      // Top events
+      runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 30).catch(() => null),
     ]);
     
     // Parse overview
+    const overviewRow = overviewResult?.value?.[0]?.rows?.[0];
     const overview = {
-      activeUsers: overviewData[0].rows?.[0]?.metricValues?.[0]?.value || 0,
-      newUsers: overviewData[0].rows?.[0]?.metricValues?.[1]?.value || 0,
-      sessions: overviewData[0].rows?.[0]?.metricValues?.[2]?.value || 0,
-      pageViews: overviewData[0].rows?.[0]?.metricValues?.[3]?.value || 0,
-      avgSessionDuration: parseFloat(overviewData[0].rows?.[0]?.metricValues?.[4]?.value) || 0,
-      bounceRate: parseFloat(overviewData[0].rows?.[0]?.metricValues?.[5]?.value) * 100 || 0,
-      engagementRate: parseFloat(overviewData[0].rows?.[0]?.metricValues?.[6]?.value) || 0,
+      activeUsers: parseInt(overviewRow?.metricValues?.[0]?.value) || 0,
+      newUsers: parseInt(overviewRow?.metricValues?.[1]?.value) || 0,
+      sessions: parseInt(overviewRow?.metricValues?.[2]?.value) || 0,
+      pageViews: parseInt(overviewRow?.metricValues?.[3]?.value) || 0,
+      avgSessionDuration: parseFloat(overviewRow?.metricValues?.[4]?.value) || 0,
+      bounceRate: parseFloat(overviewRow?.metricValues?.[5]?.value || 0) * 100,
+      engagementRate: parseFloat(overviewRow?.metricValues?.[6]?.value) || 0,
     };
     
-    // Parse categorias (turismo_clicked, restaurante_clicked, etc.)
-    const categoriasEvents = ['turismo_clicked', 'restaurante_clicked', 'comercio_clicked', 'hotel_clicked'];
-    const categorias = categoriasData[0].rows
-      ?.filter(row => categoriasEvents.includes(row.dimensionValues[0].value))
-      .map(row => {
-        let nombre = row.dimensionValues[0].value.replace('_clicked', '');
-        return {
-          categoria: nombre.charAt(0).toUpperCase() + nombre.slice(1),
-          views: parseInt(row.metricValues[0].value) || 0,
-          users: parseInt(row.metricValues[1].value) || 0,
-        };
-      }) || [];
+    // Parse pueblos
+    const pueblos = pueblosResult?.value?.[0]?.rows?.map(row => ({
+      pueblo: extractValue(row, 0),
+      views: extractMetric(row, 0),
+      users: extractMetric(row, 1),
+    })) || [];
+    
+    // Parse categorias
+    const categorias = categoriasResult?.value?.[0]?.rows?.map(row => ({
+      categoria: extractValue(row, 0),
+      pueblo: extractValue(row, 1),
+      clicks: extractMetric(row, 0),
+      users: extractMetric(row, 1),
+    })) || [];
+    
+    // Parse entidades
+    let entidades = entidadesResult?.value?.[0]?.rows?.map(row => ({
+      entidad: extractValue(row, 0),
+      categoria: extractValue(row, 1),
+      pueblo: extractValue(row, 2),
+      clicks: extractMetric(row, 0),
+      users: extractMetric(row, 1),
+    })) || [];
+    
+    // Filtrar por pueblo si se especifica
+    if (puebloId) {
+      entidades = entidades.filter(e => e.pueblo === puebloId);
+    }
     
     // Parse acciones
-    const acciones = accionesData[0].rows
-      ?.filter(row => row.dimensionValues[0].value.includes('_action') || 
-                      row.dimensionValues[0].value.includes('abrir_') ||
-                      row.dimensionValues[0].value === 'favorito_agregado' ||
-                      row.dimensionValues[0].value === 'filter')
-      .map(row => ({
-        action: row.dimensionValues[0].value.replace('_action', '').replace('abrir_', ''),
-        count: parseInt(row.metricValues[0].value) || 0,
-      })) || [];
+    const acciones = accionesResult?.value?.[0]?.rows?.map(row => ({
+      action: extractValue(row, 0),
+      count: extractMetric(row, 0),
+    })) || [];
+    
+    // Parse mapas
+    const mapas = mapasResult?.value?.[0]?.rows?.map(row => ({
+      lugar: extractValue(row, 0),
+      count: extractMetric(row, 0),
+    })) || [];
+    
+    // Parse platforms
+    const platforms = platformsResult?.value?.[0]?.rows?.map(row => ({
+      platform: extractValue(row, 0),
+      users: extractMetric(row, 0),
+      sessions: extractMetric(row, 1),
+    })) || [];
+    
+    // Parse countries
+    const countries = countriesResult?.value?.[0]?.rows?.map(row => ({
+      country: extractValue(row, 0),
+      users: extractMetric(row, 0),
+    })) || [];
+    
+    // Parse top events
+    const topEvents = topEventsResult?.value?.[0]?.rows?.map(row => ({
+      event: extractValue(row, 0),
+      count: extractMetric(row, 0),
+      users: extractMetric(row, 1),
+    })) || [];
     
     res.json({
       success: true,
       data: {
         overview,
+        pueblos,
         categorias,
+        entidades,
         acciones,
-        platforms: platformsData?.[0]?.rows?.map(r => ({
-          platform: r.dimensionValues[0].value,
-          users: parseInt(r.metricValues[0].value) || 0,
-          sessions: parseInt(r.metricValues[1].value) || 0
-        })) || [],
-        countries: countriesData?.[0]?.rows?.map(r => ({
-          country: r.dimensionValues[0].value,
-          users: parseInt(r.metricValues[0].value) || 0
-        })) || [],
-        topEvents: topEventsData?.[0]?.rows?.map(r => ({
-          event: r.dimensionValues[0].value,
-          count: parseInt(r.metricValues[0].value) || 0,
-          users: parseInt(r.metricValues[1].value) || 0
-        })) || []
+        mapas,
+        platforms,
+        countries,
+        topEvents,
+        generatedAt: new Date().toISOString()
       }
     });
   } catch (error) {
@@ -655,7 +1098,80 @@ app.get('/api/analytics/dashboard', async (req, res) => {
   }
 });
 
+// ========================================
+// PARÁMETROS DISPONIBLES - Endpoint de ayuda
+// ========================================
+
+app.get('/api/analytics/parametros-disponibles', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      eventos: {
+        'pueblo_view': {
+          descripcion: 'Vista de un pueblo',
+          parametros: ['pueblo_id', 'pueblo_nombre', 'screen_name', 'screen_class']
+        },
+        'category_view': {
+          descripcion: 'Vista de una categoría',
+          parametros: ['pueblo_id', 'category_id', 'category_name']
+        },
+        'category_clicked': {
+          descripcion: 'Click en una categoría',
+          parametros: ['category_id', 'category_name', 'pueblo_id']
+        },
+        'entity_clicked': {
+          descripcion: 'Click en una entidad/lugar',
+          parametros: ['entity_id', 'entity_name', 'category_id', 'category_name', 'pueblo_id']
+        },
+        'entity_action': {
+          descripcion: 'Acción sobre una entidad',
+          parametros: ['entity_id', 'entity_name', 'category_id', 'pueblo_id', 'action']
+        },
+        'abrir_mapa_pueblo': {
+          descripcion: 'Abrir mapa de un pueblo',
+          parametros: ['pueblo_id', 'pueblo_nombre', 'origen']
+        },
+        'abrir_mapa': {
+          descripcion: 'Abrir mapa de un lugar',
+          parametros: ['lugar_nombre', 'origen', 'latitud', 'longitud', 'map_url']
+        },
+        'abrir_informacion': {
+          descripcion: 'Abrir información de un lugar',
+          parametros: ['lugar_nombre', 'origen', 'info_url']
+        },
+        'search': {
+          descripcion: 'Búsqueda realizada',
+          parametros: ['search_term', 'result_count']
+        },
+        'filter': {
+          descripcion: 'Filtro aplicado',
+          parametros: ['filter_type', 'filter_value']
+        },
+        'button_clicked': {
+          descripcion: 'Click en botón',
+          parametros: ['item_id', 'item_name', 'button_category', 'screen_name']
+        },
+        'share': {
+          descripcion: 'Contenido compartido',
+          parametros: ['entity_id', 'entity_name', 'share_method']
+        },
+        'sos_action': {
+          descripcion: 'Acción de emergencia',
+          parametros: ['entity_id', 'entity_name', 'sos_type', 'action']
+        },
+        'app_error': {
+          descripcion: 'Error de la aplicación',
+          parametros: ['error_type', 'error_message', 'screen_name']
+        }
+      },
+      ejemplo: '/api/analytics/custom?eventName=entity_clicked&dimensions=customEvent:entity_name,customEvent:category_name,customEvent:pueblo_id&metrics=eventCount,activeUsers'
+    }
+  });
+});
+
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v2.0 (Dynamic) running on port ${PORT}`);
+  console.log(`📊 Property ID: ${PROPERTY_ID}`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
 });
 
