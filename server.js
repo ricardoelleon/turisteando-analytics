@@ -16,7 +16,7 @@ const analyticsDataClient = new BetaAnalyticsDataClient({
   },
 });
 
-const PROPERTY_ID = '353368017';
+const PROPERTY_ID = '487082948';
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
