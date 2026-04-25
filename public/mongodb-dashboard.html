@@ -729,42 +729,142 @@
         };
 
         // Variable global para almacenar datos y filtrar
+                // Variables globales para datos
         let allRealtimeData = null;
 
-        const today = new Date().toISOString().split('T')[0];
-        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-        document.addEventListener('DOMContentLoaded', () => {
-            initTabs();
-            initDatePickers();
-            loadRealtimeData();
-            
-            setInterval(() => {
-                if (document.querySelector('.tab-btn.active').dataset.tab === 'realtime') {
-                    loadRealtimeData();
+        async function loadRealtimeData() {
+            try {
+                const response = await fetch(`${API_BASE}/api/mongodb/dashboard?days=7`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('connectionStatus').textContent = 'MongoDB Conectado';
+                    
+                    allRealtimeData = result.data;
+                    
+                    // Poblar filtros
+                    populatePuebloFilter(result.data.topPueblos);
+                    // No poblamos entidades aquí, se hace al cambiar el pueblo
+                    
+                    // Renderizar con datos completos
+                    applyFilters();
+                    
+                    // Gráficos y totales (estos no cambian al filtrar detalle)
+                    renderRealtimeKpis(result.data);
+                    renderRealtimeEventsChart(result.data.eventsByDay);
+                    renderRealtimeEventsPie(result.data.eventsByType);
+                    renderRealtimeEventTypes(result.data.eventsByType);
+                    updateTimestamp();
+                } else {
+                    throw new Error(result.error);
                 }
-            }, 30000);
-        });
+            } catch (error) {
+                console.error('Error MongoDB:', error);
+                document.getElementById('connectionStatus').textContent = 'Error MongoDB';
+            }
+        }
 
-        function initTabs() {
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                    
-                    btn.classList.add('active');
-                    const tabId = btn.dataset.tab;
-                    document.getElementById(tabId).classList.add('active');
-                    
-                    document.getElementById('datePickerSection').style.display = 
-                        tabId === 'historical' ? 'block' : 'none';
+        function populatePuebloFilter(pueblos) {
+            const select = document.getElementById('puebloFilter');
+            select.innerHTML = '<option value="">Todos los pueblos</option>';
+            
+            if (pueblos && pueblos.length > 0) {
+                pueblos.forEach(p => {
+                    const option = document.createElement('option');
+                    option.value = p.pueblo;
+                    option.textContent = p.pueblo;
+                    select.appendChild(option);
                 });
+            }
+        }
+
+        function populateEntityFilter(entities, selectedPueblo) {
+            const select = document.getElementById('entityFilter');
+            select.innerHTML = '<option value="">Todos los sitios</option>';
+            
+            if (!entities) return;
+
+            // Filtrar entidades por pueblo seleccionado
+            const filteredEntities = selectedPueblo 
+                ? entities.filter(e => e.pueblo === selectedPueblo)
+                : entities;
+
+            // Ordenar por nombre
+            filteredEntities.sort((a, b) => a.entidad.localeCompare(b.entidad));
+
+            filteredEntities.forEach(e => {
+                const option = document.createElement('option');
+                option.value = e.entidad;
+                option.textContent = `${e.entidad} (${e.categoria || 'Sin cat.'})`;
+                select.appendChild(option);
             });
         }
 
-        function initDatePickers() {
-            document.getElementById('startDate').value = weekAgo;
-            document.getElementById('endDate').value = today;
+        function onPuebloChange() {
+            const selectedPueblo = document.getElementById('puebloFilter').value;
+            
+            // 1. Actualizar lista de sitios basado en el pueblo
+            if (allRealtimeData) {
+                populateEntityFilter(allRealtimeData.topEntidades, selectedPueblo);
+            }
+            
+            // 2. Aplicar filtros a las tarjetas
+            applyFilters();
+        }
+
+        function applyFilters() {
+            if (!allRealtimeData) return;
+
+            const selectedPueblo = document.getElementById('puebloFilter').value;
+            const selectedEntity = document.getElementById('entityFilter').value;
+
+            // 1. Filtrar Pueblos (siempre se muestra todo a menos que haya filtro de entidad?)
+            // Si selecciono una entidad, solo quiero ver datos de esa entidad.
+            
+            // 2. Filtrar Categorías
+            let filteredCategorias = allRealtimeData.topCategorias;
+            if (selectedPueblo) {
+                filteredCategorias = filteredCategorias.filter(c => c.pueblo === selectedPueblo);
+            }
+            // Si hay entidad seleccionada, no filtramos categorías por entidad (no tiene sentido), 
+            // pero podrías ocultar la tarjeta si quisieras. Mejor dejarla para contexto.
+
+            // 3. Filtrar Entidades
+            let filteredEntidades = allRealtimeData.topEntidades;
+            if (selectedPueblo) {
+                filteredEntidades = filteredEntidades.filter(e => e.pueblo === selectedPueblo);
+            }
+            if (selectedEntity) {
+                filteredEntidades = filteredEntidades.filter(e => e.entidad === selectedEntity);
+            }
+
+            // 4. Filtrar Acciones (LA PARTE IMPORTANTE)
+            let filteredAcciones = allRealtimeData.acciones;
+            
+            if (selectedPueblo) {
+                filteredAcciones = filteredAcciones.filter(a => a.pueblo === selectedPueblo);
+            }
+            if (selectedEntity) {
+                filteredAcciones = filteredAcciones.filter(a => a.entity === selectedEntity);
+            }
+
+            // Renderizar
+            renderRealtimePueblos(allRealtimeData.topPueblos); // Pueblos siempre se muestran completos
+            renderRealtimeCategorias(filteredCategorias);
+            renderRealtimeEntidades(filteredEntidades);
+            renderRealtimeAcciones(filteredAcciones);
+        }
+
+        function clearFilters() {
+            document.getElementById('puebloFilter').value = "";
+            document.getElementById('entityFilter').value = "";
+            
+            // Restaurar lista completa de entidades
+            if (allRealtimeData) {
+                populateEntityFilter(allRealtimeData.topEntidades, "");
+            }
+            
+            applyFilters();
         }
 
         // ==================== TIEMPO REAL (MongoDB) ====================
