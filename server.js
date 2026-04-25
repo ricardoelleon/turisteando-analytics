@@ -1275,18 +1275,45 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       { $limit: 20 }
     ]).toArray();
     
-    // Pueblos más vistos
-    const topPueblos = await mongoDb.collection('events').aggregate([
+    // Pueblos más vistos - busca en town_name, pueblo_nombre, etc.
+    let topPueblos = await mongoDb.collection('events').aggregate([
       { 
         $match: { 
           server_time: { $gte: startDate },
-          event_name: 'pueblo_view'
+          'data.town_name': { $exists: true, $ne: null }
         } 
       },
-      { $group: { _id: '$data.pueblo_nombre', count: { $sum: 1 } } },
+      { $group: { _id: '$data.town_name', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
-      { $limit: 10 }
+      { $limit: 15 }
     ]).toArray();
+    
+    // Filtrar valores vacíos
+    topPueblos = topPueblos.filter(p => p._id && p._id.trim() !== '');
+    
+    // Si no encontramos con town_name, buscar con pueblo_nombre
+    if (topPueblos.length === 0) {
+      topPueblos = await mongoDb.collection('events').aggregate([
+        { 
+          $match: { 
+            server_time: { $gte: startDate },
+            $or: [
+              { event_name: 'pueblo_view' },
+              { event_name: 'abrir_mapa_pueblo' },
+              { 'data.pueblo_nombre': { $exists: true, $ne: null } },
+              { 'data.pueblo_id': { $exists: true, $ne: null } }
+            ]
+          } 
+        },
+        { $group: { 
+          _id: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }, 
+          count: { $sum: 1 } 
+        }},
+        { $sort: { count: -1 } },
+        { $limit: 15 }
+      ]).toArray();
+      topPueblos = topPueblos.filter(p => p._id && p._id.trim() !== '');
+    }
     
     // Categorías más clickeadas
     const topCategorias = await mongoDb.collection('events').aggregate([
