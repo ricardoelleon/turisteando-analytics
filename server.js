@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { BetaAnalyticsDataClient } = require('@google-analytics/data');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,6 +9,10 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+// ========================================
+// FIREBASE ANALYTICS (EXISTENTE - NO SE TOCA)
+// ========================================
 
 const analyticsDataClient = new BetaAnalyticsDataClient({
   credentials: {
@@ -19,7 +24,46 @@ const analyticsDataClient = new BetaAnalyticsDataClient({
 const PROPERTY_ID = process.env.PROPERTY_ID || '487082948';
 
 // ========================================
-// HELPER FUNCTIONS - MEJORADOS Y DINÁMICOS
+// MONGODB ATLAS (DINÁMICO - ANALYTICS PERSONALIZADO)
+// ========================================
+
+const MONGODB_URI = process.env.MONGODB_URI;
+const DB_NAME = 'turisteando_analytics';
+const COLLECTION_NAME = 'events';
+
+let mongoClient;
+let db;
+
+async function connectMongoDB() {
+  try {
+    if (!MONGODB_URI) {
+      console.log('⚠️ MONGODB_URI no configurado. MongoDB deshabilitado.');
+      return;
+    }
+    
+    mongoClient = new MongoClient(MONGODB_URI);
+    await mongoClient.connect();
+    db = mongoClient.db(DB_NAME);
+    console.log('✅ Conectado a MongoDB Atlas');
+    console.log(`📊 Base de datos: ${DB_NAME}`);
+    console.log(`📁 Colección: ${COLLECTION_NAME}`);
+    
+    // Crear índices para mejor rendimiento
+    await db.collection(COLLECTION_NAME).createIndex({ eventName: 1 });
+    await db.collection(COLLECTION_NAME).createIndex({ timestamp: -1 });
+    await db.collection(COLLECTION_NAME).createIndex({ user_id: 1 });
+    console.log('📊 Índices creados');
+    
+  } catch (error) {
+    console.error('❌ Error conectando a MongoDB:', error.message);
+    console.log('⚠️ El servidor continuará sin MongoDB (solo Firebase Analytics)');
+  }
+}
+
+connectMongoDB();
+
+// ========================================
+// HELPER FUNCTIONS - FIREBASE ANALYTICS
 // ========================================
 
 async function runReport(dimensions, metrics, dateRange, orderBy = null, limit = 10) {
@@ -55,7 +99,6 @@ async function runReportWithFilter(dimensions, metrics, dateRange, filter, order
   return await analyticsDataClient.runReport(request);
 }
 
-// Función helper para extraer valores de forma segura
 function extractValue(row, index, defaultValue = '') {
   return row.dimensionValues?.[index]?.value || defaultValue;
 }
@@ -74,7 +117,686 @@ app.use((req, res, next) => {
 });
 
 // ========================================
-// BASIC ENDPOINTS
+// ENDPOINTS MONGODB - 100% DINÁMICOS
+// ========================================
+
+// Guardar evento de analytics desde la app - COMPLETAMENTE DINÁMICO
+app.post('/api/mongodb/event', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    // Aceptar CUALQUIER campo que venga del cliente
+    const event = {
+      ...req.body,
+      timestamp: new Date(),
+      serverTime: new Date().toISOString(),
+    };
+
+    const result = await db.collection(COLLECTION_NAME).insertOne(event);
+    
+    console.log(`📝 Evento guardado: ${event.eventName} - ID: ${result.insertedId}`);
+    
+    res.json({ 
+      success: true, 
+      insertedId: result.insertedId,
+      message: 'Evento guardado correctamente',
+      fieldsReceived: Object.keys(req.body)
+    });
+  } catch (error) {
+    console.error('Error guardando evento:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Guardar múltiples eventos (batch) - DINÁMICO
+app.post('/api/mongodb/events/batch', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const events = req.body.events.map(event => ({
+      ...event,
+      timestamp: new Date(),
+      serverTime: new Date().toISOString(),
+    }));
+
+    const result = await db.collection(COLLECTION_NAME).insertMany(events);
+    
+    res.json({ 
+      success: true, 
+      insertedCount: result.insertedCount,
+      message: `${result.insertedCount} eventos guardados`
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// DESCUBRIMIENTO AUTOMÁTICO DE CAMPOS
+// ========================================
+
+// Descubrir todos los campos disponibles - DINÁMICO
+app.get('/api/mongodb/campos-disponibles', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    // Obtener todos los campos únicos de todos los documentos
+    const allKeys = await db.collection(COLLECTION_NAME).aggregate([
+      { $project: { arrayofkeyvalue: { $objectToArray: '$$ROOT' } } },
+      { $unwind: '$arrayofkeyvalue' },
+      { $group: { 
+          _id: null, 
+          allkeys: { $addToSet: '$arrayofkeyvalue.k' } 
+        } 
+      }
+    ]).toArray();
+
+    const campos = allKeys[0]?.allkeys || [];
+    
+    // Excluir campos del sistema
+    const camposSistema = ['_id', 'timestamp', 'serverTime'];
+    const camposUsuario = campos.filter(c => !camposSistema.includes(c)).sort();
+
+    // Obtener valores únicos para cada campo
+    const camposConValores = {};
+    for (const campo of camposUsuario) {
+      const valores = await db.collection(COLLECTION_NAME).distinct(campo);
+      camposConValores[campo] = valores.slice(0, 50); // Máximo 50 valores
+    }
+
+    res.json({
+      success: true,
+      data: {
+        campos: camposUsuario,
+        camposConValores,
+        totalCampos: camposUsuario.length
+      }
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Descubrir todos los tipos de eventos - DINÁMICO
+app.get('/api/mongodb/tipos-eventos', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const eventos = await db.collection(COLLECTION_NAME).aggregate([
+      { $group: { 
+          _id: '$eventName', 
+          count: { $sum: 1 },
+          ultimoRegistro: { $max: '$timestamp' }
+        } 
+      },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      data: eventos.map(e => ({
+        eventName: e._id,
+        count: e.count,
+        ultimoRegistro: e.ultimoRegistro
+      }))
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// CONSULTA DINÁMICA - CUALQUIER CAMPO
+// ========================================
+
+// Obtener eventos con filtros dinámicos
+app.get('/api/mongodb/events', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const {
+      limit = 100,
+      page = 1,
+      ...filtros  // CUALQUIER filtro pasado como query param
+    } = req.query;
+
+    // Construir filtro dinámicamente
+    const filter = {};
+    
+    Object.keys(filtros).forEach(key => {
+      if (filtros[key]) {
+        // Soportar múltiples valores separados por coma
+        if (filtros[key].includes(',')) {
+          filter[key] = { $in: filtros[key].split(',') };
+        } else {
+          // Búsqueda parcial para strings
+          if (isNaN(filtros[key])) {
+            filter[key] = { $regex: filtros[key], $options: 'i' };
+          } else {
+            filter[key] = filtros[key];
+          }
+        }
+      }
+    });
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const events = await db.collection(COLLECTION_NAME)
+      .find(filter)
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    const total = await db.collection(COLLECTION_NAME).countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: events,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      },
+      filtrosAplicados: filter
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// AGREGACIÓN DINÁMICA - PARA DASHBOARD
+// ========================================
+
+// Agregación genérica por cualquier campo
+app.get('/api/mongodb/agregar/:campo', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { campo } = req.params;
+    const { 
+      startDate, 
+      endDate, 
+      eventName,
+      filtro,        // JSON string con filtros adicionales
+      limit = 20,
+      sortBy = 'count',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Construir match stage
+    const matchStage = {};
+    
+    if (eventName) matchStage.eventName = eventName;
+    
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+    
+    // Agregar filtros adicionales
+    if (filtro) {
+      try {
+        const filtrosAdicionales = JSON.parse(filtro);
+        Object.assign(matchStage, filtrosAdicionales);
+      } catch (e) {
+        // Ignorar si no es JSON válido
+      }
+    }
+
+    const sortDirection = sortOrder === 'desc' ? -1 : 1;
+    const sortField = sortBy === 'count' ? 'count' : campo;
+
+    const resultado = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: matchStage },
+      { $group: { 
+          _id: `$${campo}`, 
+          count: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$user_id' },
+          ultimoRegistro: { $max: '$timestamp' }
+        } 
+      },
+      { 
+        $project: { 
+          [campo]: '$_id', 
+          count: 1, 
+          uniqueUsers: { $size: '$uniqueUsers' },
+          ultimoRegistro: 1,
+          _id: 0 
+        } 
+      },
+      { $sort: { [sortField]: sortDirection } },
+      { $limit: parseInt(limit) }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      campo,
+      totalValores: resultado.length,
+      data: resultado
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Agregación por múltiples campos
+app.get('/api/mongodb/agregar-multiple', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { 
+      campos,        // Separados por coma: pueblo_nombre,category_name
+      startDate, 
+      endDate, 
+      eventName,
+      limit = 30
+    } = req.query;
+
+    if (!campos) {
+      return res.json({ 
+        success: false, 
+        error: 'campos es requerido',
+        ejemplo: '/api/mongodb/agregar-multiple?campos=pueblo_nombre,category_name'
+      });
+    }
+
+    const camposList = campos.split(',').map(c => c.trim());
+
+    // Construir match stage
+    const matchStage = {};
+    
+    if (eventName) matchStage.eventName = eventName;
+    
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+
+    // Construir $group dinámicamente
+    const groupId = {};
+    camposList.forEach(campo => {
+      groupId[campo] = `$${campo}`;
+    });
+
+    const resultado = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: matchStage },
+      { $group: { 
+          _id: groupId, 
+          count: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$user_id' }
+        } 
+      },
+      { 
+        $project: { 
+          ...camposList.reduce((acc, campo) => {
+            acc[campo] = `$_id.${campo}`;
+            return acc;
+          }, {}),
+          count: 1, 
+          uniqueUsers: { $size: '$uniqueUsers' },
+          _id: 0 
+        } 
+      },
+      { $sort: { count: -1 } },
+      { $limit: parseInt(limit) }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      campos: camposList,
+      data: resultado
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// DASHBOARD DINÁMICO - AUTO-DESCUBIERTO
+// ========================================
+
+// Resumen general - DINÁMICO
+app.get('/api/mongodb/overview', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { startDate, endDate } = req.query;
+    
+    const matchStage = {};
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+
+    const stats = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: Object.keys(matchStage).length > 0 ? matchStage : {} },
+      {
+        $facet: {
+          totalEvents: [{ $count: 'count' }],
+          uniqueUsers: [
+            { $group: { _id: '$user_id' } },
+            { $count: 'count' }
+          ],
+          eventTypes: [
+            { $group: { _id: '$eventName', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 20 }
+          ],
+          eventsByDate: [
+            {
+              $group: {
+                _id: {
+                  $dateToString: { format: '%Y-%m-%d', date: '$timestamp' }
+                },
+                count: { $sum: 1 }
+              }
+            },
+            { $sort: { _id: 1 } },
+            { $limit: 30 }
+          ],
+          eventsByHour: [
+            {
+              $group: {
+                _id: { $hour: '$timestamp' },
+                count: { $sum: 1 }
+              }
+            },
+            { $sort: { _id: 1 } }
+          ]
+        }
+      }
+    ]).toArray();
+
+    const result = stats[0];
+
+    res.json({
+      success: true,
+      data: {
+        totalEvents: result.totalEvents[0]?.count || 0,
+        uniqueUsers: result.uniqueUsers[0]?.count || 0,
+        eventTypes: result.eventTypes.map(e => ({ eventName: e._id, count: e.count })),
+        eventsByDate: result.eventsByDate.map(e => ({ date: e._id, count: e.count })),
+        eventsByHour: result.eventsByHour.map(e => ({ hour: e._id, count: e.count }))
+      }
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Dashboard completo auto-descubierto - DINÁMICO
+app.get('/api/mongodb/dashboard', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { startDate, endDate } = req.query;
+
+    const matchStage = {};
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+
+    // Descubrir campos automáticamente
+    const camposDescubiertos = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: Object.keys(matchStage).length > 0 ? matchStage : {} },
+      { $project: { arrayofkeyvalue: { $objectToArray: '$$ROOT' } } },
+      { $unwind: '$arrayofkeyvalue' },
+      { $group: { _id: '$arrayofkeyvalue.k', count: { $sum: 1 } } },
+      { $match: { _id: { $nin: ['_id', 'timestamp', 'serverTime', 'user_id', 'eventName'] } } },
+      { $sort: { count: -1 } },
+      { $limit: 20 }
+    ]).toArray();
+
+    const campos = camposDescubiertos.map(c => c._id);
+
+    // Generar agregaciones para cada campo descubierto
+    const agregaciones = {};
+    
+    for (const campo of campos) {
+      const datos = await db.collection(COLLECTION_NAME).aggregate([
+        { $match: { ...matchStage, [campo]: { $exists: true, $ne: null, $ne: '' } } },
+        { $group: { _id: `$${campo}`, count: { $sum: 1 } } },
+        { $project: { [campo]: '$_id', count: 1, _id: 0 } },
+        { $sort: { count: -1 } },
+        { $limit: 15 }
+      ]).toArray();
+      
+      if (datos.length > 0) {
+        agregaciones[campo] = datos;
+      }
+    }
+
+    // Overview
+    const overview = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: Object.keys(matchStage).length > 0 ? matchStage : {} },
+      {
+        $facet: {
+          totalEvents: [{ $count: 'count' }],
+          uniqueUsers: [{ $group: { _id: '$user_id' } }, { $count: 'count' }],
+          eventTypes: [{ $group: { _id: '$eventName', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]
+        }
+      }
+    ]).toArray();
+
+    // Eventos por día
+    const eventosPorDia = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: Object.keys(matchStage).length > 0 ? matchStage : {} },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }, count: { $sum: 1 } } },
+      { $project: { date: '$_id', count: 1, _id: 0 } },
+      { $sort: { date: 1 } },
+      { $limit: 30 }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      data: {
+        overview: {
+          totalEvents: overview[0]?.totalEvents[0]?.count || 0,
+          uniqueUsers: overview[0]?.uniqueUsers[0]?.count || 0,
+          eventTypes: overview[0]?.eventTypes || []
+        },
+        camposDescubiertos: campos,
+        agregaciones,
+        eventosPorDia,
+        generatedAt: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// ENDPOINTS DE CONVENIENCIA (Mantienen compatibilidad)
+// ========================================
+
+// Pueblos - usa agregación dinámica
+app.get('/api/mongodb/pueblos', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { startDate, endDate, limit = 20 } = req.query;
+
+    const matchStage = {
+      pueblo_nombre: { $exists: true, $ne: null }
+    };
+    
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+
+    const pueblos = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: matchStage },
+      { $group: {
+          _id: '$pueblo_nombre',
+          views: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$user_id' }
+        }
+      },
+      { $project: { pueblo: '$_id', views: 1, uniqueUsers: { $size: '$uniqueUsers' }, _id: 0 } },
+      { $sort: { views: -1 } },
+      { $limit: parseInt(limit) }
+    ]).toArray();
+
+    res.json({ success: true, data: pueblos });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Categorías - usa agregación dinámica
+app.get('/api/mongodb/categorias', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { startDate, endDate, pueblo_nombre, limit = 20 } = req.query;
+
+    const matchStage = {
+      category_name: { $exists: true, $ne: null }
+    };
+    
+    if (pueblo_nombre) matchStage.pueblo_nombre = pueblo_nombre;
+    
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+
+    const categorias = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: matchStage },
+      { $group: {
+          _id: { categoria: '$category_name', pueblo: '$pueblo_nombre' },
+          clicks: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$user_id' }
+        }
+      },
+      { $project: { categoria: '$_id.categoria', pueblo: '$_id.pueblo', clicks: 1, uniqueUsers: { $size: '$uniqueUsers' }, _id: 0 } },
+      { $sort: { clicks: -1 } },
+      { $limit: parseInt(limit) }
+    ]).toArray();
+
+    res.json({ success: true, data: categorias });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Entidades - usa agregación dinámica
+app.get('/api/mongodb/entidades', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { startDate, endDate, pueblo_nombre, category_name, limit = 30 } = req.query;
+
+    const matchStage = {
+      entity_name: { $exists: true, $ne: null }
+    };
+    
+    if (pueblo_nombre) matchStage.pueblo_nombre = pueblo_nombre;
+    if (category_name) matchStage.category_name = category_name;
+    
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+
+    const entidades = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: matchStage },
+      { $group: {
+          _id: { entidad: '$entity_name', categoria: '$category_name', pueblo: '$pueblo_nombre' },
+          clicks: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$user_id' }
+        }
+      },
+      { $project: { entidad: '$_id.entidad', categoria: '$_id.categoria', pueblo: '$_id.pueblo', clicks: 1, uniqueUsers: { $size: '$uniqueUsers' }, _id: 0 } },
+      { $sort: { clicks: -1 } },
+      { $limit: parseInt(limit) }
+    ]).toArray();
+
+    res.json({ success: true, data: entidades });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Acciones - usa agregación dinámica
+app.get('/api/mongodb/acciones', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+
+    const { startDate, endDate, limit = 30 } = req.query;
+
+    const matchStage = {
+      action: { $exists: true, $ne: null }
+    };
+    
+    if (startDate || endDate) {
+      matchStage.timestamp = {};
+      if (startDate) matchStage.timestamp.$gte = new Date(startDate);
+      if (endDate) matchStage.timestamp.$lte = new Date(endDate);
+    }
+
+    const acciones = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: matchStage },
+      { $group: { _id: { action: '$action', entidad: '$entity_name' }, count: { $sum: 1 } } },
+      { $project: { action: '$_id.action', entidad: '$_id.entidad', count: 1, _id: 0 } },
+      { $sort: { count: -1 } },
+      { $limit: parseInt(limit) }
+    ]).toArray();
+
+    const resumen = await db.collection(COLLECTION_NAME).aggregate([
+      { $match: matchStage },
+      { $group: { _id: '$action', count: { $sum: 1 } } },
+      { $project: { action: '$_id', count: 1, _id: 0 } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    res.json({ success: true, data: { detalles: acciones, resumen } });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// ENDPOINTS FIREBASE ANALYTICS (EXISTENTES)
 // ========================================
 
 app.get('/api/health', (req, res) => {
@@ -82,11 +804,12 @@ app.get('/api/health', (req, res) => {
     status: 'OK', 
     timestamp: new Date().toISOString(),
     propertyId: PROPERTY_ID,
-    version: '2.0.0-dynamic'
+    mongodb: db ? 'connected' : 'disconnected',
+    version: '4.0.0-mongodb-dynamic'
   });
 });
 
-// Overview - KPIs generales
+// Overview - KPIs generales (Firebase)
 app.get('/api/analytics/overview', async (req, res) => {
   try {
     const { startDate = '7daysAgo', endDate = 'today' } = req.query;
@@ -117,7 +840,7 @@ app.get('/api/analytics/overview', async (req, res) => {
   }
 });
 
-// Users by day
+// Users by day (Firebase)
 app.get('/api/analytics/users-by-day', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -137,7 +860,26 @@ app.get('/api/analytics/users-by-day', async (req, res) => {
   }
 });
 
-// By platform
+// Top events (Firebase)
+app.get('/api/analytics/top-events', async (req, res) => {
+  try {
+    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
+    
+    const [report] = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 30);
+    
+    const data = report.rows?.map(row => ({
+      event: extractValue(row, 0),
+      count: extractMetric(row, 0),
+      users: extractMetric(row, 1),
+    })) || [];
+    
+    res.json({ success: true, data });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// By platform (Firebase)
 app.get('/api/analytics/by-platform', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -158,7 +900,7 @@ app.get('/api/analytics/by-platform', async (req, res) => {
   }
 });
 
-// By country
+// By country (Firebase)
 app.get('/api/analytics/by-country', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -177,26 +919,7 @@ app.get('/api/analytics/by-country', async (req, res) => {
   }
 });
 
-// Top events (general)
-app.get('/api/analytics/top-events', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    const [report] = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 30);
-    
-    const data = report.rows?.map(row => ({
-      event: extractValue(row, 0),
-      count: extractMetric(row, 0),
-      users: extractMetric(row, 1),
-    })) || [];
-    
-    res.json({ success: true, data });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// Top screens
+// Top screens (Firebase)
 app.get('/api/analytics/top-screens', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -216,962 +939,45 @@ app.get('/api/analytics/top-screens', async (req, res) => {
 });
 
 // ========================================
-// ENDPOINTS DINÁMICOS - TURISTEANDO APP
+// LIMPIEZA DE DATOS (OPCIONAL)
 // ========================================
 
-// EVENTOS DESCUBIERTOS AUTOMÁTICAMENTE
-// Este endpoint descubre todos los eventos personalizados y sus parámetros
-app.get('/api/analytics/eventos-descubiertos', async (req, res) => {
+app.delete('/api/mongodb/events/old', async (req, res) => {
   try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    // 1. Obtener todos los eventos
-    const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 100);
-    
-    const eventos = [];
-    
-    // 2. Para cada evento personalizado, intentar descubrir sus parámetros
-    const customEventPrefixes = ['pueblo_', 'category_', 'entity_', 'abrir_', 'sos_', 'button_', 'filter', 'search'];
-    
-    for (const row of eventsReport.rows || []) {
-      const eventName = extractValue(row, 0);
-      const count = extractMetric(row, 0);
-      
-      // Verificar si es un evento personalizado de Turisteando
-      const isCustom = customEventPrefixes.some(prefix => eventName.startsWith(prefix)) ||
-                       eventName.includes('_action') ||
-                       eventName.includes('_clicked') ||
-                       eventName.includes('_view');
-      
-      if (isCustom && count > 0) {
-        eventos.push({
-          event: eventName,
-          count: count
-        });
-      }
+    if (!db) {
+      return res.json({ success: false, error: 'MongoDB no conectado' });
     }
-    
-    res.json({ success: true, data: eventos });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
 
-// PUEBLOS - Dinámico
-app.get('/api/analytics/pueblos', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    // Intentar obtener de pueblo_view con customEvent:pueblo_nombre
-    let pueblos = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:pueblo_nombre'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'pueblo_view' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      pueblos = report.rows?.map(row => ({
-        pueblo: extractValue(row, 0),
-        views: extractMetric(row, 0),
-        users: extractMetric(row, 1),
-      })) || [];
-    } catch (e) {
-      // Fallback: buscar en screenName
-      try {
-        const [screenReport] = await runReport(['screenName'], ['screenPageViews', 'activeUsers'], { startDate, endDate }, 'screenPageViews', 50);
-        
-        pueblos = screenReport.rows
-          ?.filter(row => {
-            const screen = extractValue(row, 0).toLowerCase();
-            return screen.includes('pueblo_') || screen.includes('Screen');
-          })
-          .map(row => ({
-            pueblo: extractValue(row, 0).replace('Pueblo_', '').replace('Screen', ''),
-            views: extractMetric(row, 0),
-            users: extractMetric(row, 1),
-          })) || [];
-      } catch (e2) {
-        pueblos = [];
-      }
-    }
-    
-    res.json({ success: true, data: pueblos });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
+    const { days = 90 } = req.query;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - parseInt(days));
 
-// CATEGORÍAS - Dinámico con parámetros
-app.get('/api/analytics/categorias', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    // Intentar obtener category_clicked con customEvent:category_name
-    let categorias = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:category_name', 'customEvent:pueblo_id'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'category_clicked' }
-          }
-        },
-        'eventCount', 50
-      );
-      
-      categorias = report.rows?.map(row => ({
-        categoria: extractValue(row, 0),
-        pueblo: extractValue(row, 1),
-        clicks: extractMetric(row, 0),
-        users: extractMetric(row, 1),
-      })) || [];
-    } catch (e) {
-      // Fallback: método anterior
-      const [eventsReport] = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 50);
-      
-      const categoriasEvents = ['turismo_clicked', 'restaurante_clicked', 'comercio_clicked', 'hotel_clicked', 'category_clicked'];
-      
-      categorias = eventsReport.rows
-        ?.filter(row => categoriasEvents.some(e => extractValue(row, 0).includes(e.replace('_clicked', ''))))
-        .map(row => {
-          let nombre = extractValue(row, 0).replace('_clicked', '');
-          return {
-            categoria: nombre.charAt(0).toUpperCase() + nombre.slice(1),
-            clicks: extractMetric(row, 0),
-            users: extractMetric(row, 1),
-          };
-        }) || [];
-    }
-    
-    res.json({ success: true, data: categorias });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// VISTA DE CATEGORÍAS (category_view)
-app.get('/api/analytics/categorias-vistas', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let vistas = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:category_name', 'customEvent:pueblo_id'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'category_view' }
-          }
-        },
-        'eventCount', 50
-      );
-      
-      vistas = report.rows?.map(row => ({
-        categoria: extractValue(row, 0),
-        pueblo: extractValue(row, 1),
-        views: extractMetric(row, 0),
-        users: extractMetric(row, 1),
-      })) || [];
-    } catch (e) {
-      vistas = [];
-    }
-    
-    res.json({ success: true, data: vistas });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// ENTIDADES (lugares) - Dinámico con todos los parámetros
-app.get('/api/analytics/entidades', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today', puebloId } = req.query;
-    
-    let entidades = [];
-    
-    // Construir filtro base
-    let filter = {
-      filter: {
-        fieldName: 'eventName',
-        stringFilter: { value: 'entity_clicked' }
-      }
-    };
-    
-    // Si hay puebloId, agregar filtro adicional
-    if (puebloId) {
-      filter = {
-        filter: {
-          andGroup: {
-            filters: [
-              { fieldName: 'eventName', stringFilter: { value: 'entity_clicked' } },
-              { fieldName: 'customEvent:pueblo_id', stringFilter: { value: puebloId } }
-            ]
-          }
-        }
-      };
-    }
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:entity_name', 'customEvent:category_name', 'customEvent:pueblo_id'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        filter,
-        'eventCount', 50
-      );
-      
-      entidades = report.rows?.map(row => ({
-        entidad: extractValue(row, 0),
-        categoria: extractValue(row, 1),
-        pueblo: extractValue(row, 2),
-        clicks: extractMetric(row, 0),
-        users: extractMetric(row, 1),
-      })) || [];
-    } catch (e) {
-      // Fallback: método anterior con eventos específicos
-      const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 100);
-      
-      const entityEvents = eventsReport.rows
-        ?.filter(row => extractValue(row, 0).includes('_clicked'))
-        .map(row => ({
-          entidad: extractValue(row, 0),
-          clicks: extractMetric(row, 0),
-        })) || [];
-      
-      entidades = entityEvents;
-    }
-    
-    res.json({ success: true, data: entidades });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// DETALLES DE ENTIDADES (entity_detail_view)
-app.get('/api/analytics/entidades-detalles', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let detalles = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:entity_name', 'customEvent:category_name', 'customEvent:pueblo_id'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'screen_view' }
-          }
-        },
-        'eventCount', 50
-      );
-      
-      // Filtrar solo los que tienen entity_name (vistas de detalle)
-      detalles = report.rows
-        ?.filter(row => extractValue(row, 0) && extractValue(row, 0) !== '(not set)')
-        .map(row => ({
-          entidad: extractValue(row, 0),
-          categoria: extractValue(row, 1),
-          pueblo: extractValue(row, 2),
-          views: extractMetric(row, 0),
-          users: extractMetric(row, 1),
-        })) || [];
-    } catch (e) {
-      detalles = [];
-    }
-    
-    res.json({ success: true, data: detalles });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// ACCIONES - Dinámico con customEvent:action
-app.get('/api/analytics/acciones', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let acciones = [];
-    
-    try {
-      // Obtener acciones de entity_action
-      const [report] = await runReportWithFilter(
-        ['customEvent:action', 'customEvent:entity_name'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'entity_action' }
-          }
-        },
-        'eventCount', 50
-      );
-      
-      acciones = report.rows?.map(row => ({
-        action: extractValue(row, 0),
-        entidad: extractValue(row, 1),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      // Fallback: buscar eventos que contengan action
-      const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 50);
-      
-      acciones = eventsReport.rows
-        ?.filter(row => extractValue(row, 0).includes('action') || extractValue(row, 0).includes('abrir_'))
-        .map(row => ({
-          action: extractValue(row, 0).replace('_action', '').replace('abrir_', ''),
-          count: extractMetric(row, 0),
-        })) || [];
-    }
-    
-    res.json({ success: true, data: acciones });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// RESUMEN DE ACCIONES
-app.get('/api/analytics/acciones-resumen', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let resumen = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:action'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'entity_action' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      resumen = report.rows?.map(row => ({
-        action: extractValue(row, 0),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      resumen = [];
-    }
-    
-    res.json({ success: true, data: resumen });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// MAPAS - Abrir mapa
-app.get('/api/analytics/mapas', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let mapas = [];
-    
-    // Mapas de pueblos
-    try {
-      const [puebloReport] = await runReportWithFilter(
-        ['customEvent:pueblo_nombre'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'abrir_mapa_pueblo' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      mapas.push(...(puebloReport.rows?.map(row => ({
-        tipo: 'pueblo',
-        lugar: extractValue(row, 0),
-        count: extractMetric(row, 0),
-      })) || []));
-    } catch (e) {}
-    
-    // Mapas de lugares
-    try {
-      const [lugarReport] = await runReportWithFilter(
-        ['customEvent:lugar_nombre'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'abrir_mapa' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      mapas.push(...(lugarReport.rows?.map(row => ({
-        tipo: 'lugar',
-        lugar: extractValue(row, 0),
-        count: extractMetric(row, 0),
-      })) || []));
-    } catch (e) {}
-    
-    res.json({ success: true, data: mapas });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// BÚSQUEDAS - Dinámico
-app.get('/api/analytics/busquedas', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let busquedas = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:search_term'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'search' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      busquedas = report.rows?.map(row => ({
-        query: extractValue(row, 0),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      busquedas = [];
-    }
-    
-    res.json({ success: true, data: busquedas });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// FILTROS
-app.get('/api/analytics/filtros', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let filtros = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:filter_type', 'customEvent:filter_value'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'filter' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      filtros = report.rows?.map(row => ({
-        tipo: extractValue(row, 0),
-        valor: extractValue(row, 1),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      filtros = [];
-    }
-    
-    res.json({ success: true, data: filtros });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// SOS - Emergencias
-app.get('/api/analytics/sos', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let sos = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:sos_type', 'customEvent:action'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'sos_action' }
-          }
-        },
-        'eventCount', 20
-      );
-      
-      sos = report.rows?.map(row => ({
-        tipo: extractValue(row, 0),
-        action: extractValue(row, 1),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      sos = [];
-    }
-    
-    res.json({ success: true, data: sos });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// ERRORES
-app.get('/api/analytics/errores', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let errores = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:error_type', 'customEvent:error_message'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'app_error' }
-          }
-        },
-        'eventCount', 20
-      );
-      
-      errores = report.rows?.map(row => ({
-        tipo: extractValue(row, 0),
-        mensaje: extractValue(row, 1),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      errores = [];
-    }
-    
-    res.json({ success: true, data: errores });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// BOTONES
-app.get('/api/analytics/botones', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let botones = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:item_name', 'customEvent:screen_name'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'button_clicked' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      botones = report.rows?.map(row => ({
-        boton: extractValue(row, 0),
-        pantalla: extractValue(row, 1),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      botones = [];
-    }
-    
-    res.json({ success: true, data: botones });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// COMPARTIR
-app.get('/api/analytics/compartir', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today' } = req.query;
-    
-    let compartir = [];
-    
-    try {
-      const [report] = await runReportWithFilter(
-        ['customEvent:entity_name', 'customEvent:share_method'],
-        ['eventCount'],
-        { startDate, endDate },
-        {
-          filter: {
-            fieldName: 'eventName',
-            stringFilter: { value: 'share' }
-          }
-        },
-        'eventCount', 30
-      );
-      
-      compartir = report.rows?.map(row => ({
-        entidad: extractValue(row, 0),
-        metodo: extractValue(row, 1),
-        count: extractMetric(row, 0),
-      })) || [];
-    } catch (e) {
-      compartir = [];
-    }
-    
-    res.json({ success: true, data: compartir });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// ========================================
-// ENDPOINT GENÉRICO DINÁMICO
-// Este endpoint permite consultar cualquier evento con cualquier parámetro
-// ========================================
-
-app.get('/api/analytics/custom', async (req, res) => {
-  try {
-    const { 
-      startDate = '30daysAgo', 
-      endDate = 'today',
-      eventName,           // Nombre del evento a filtrar
-      dimensions,          // Dimensiones separadas por coma (ej: "customEvent:pueblo_nombre,customEvent:category_name")
-      metrics = 'eventCount,activeUsers',  // Métricas por defecto
-      limit = 30
-    } = req.query;
-    
-    if (!eventName) {
-      return res.json({ 
-        success: false, 
-        error: 'eventName es requerido',
-        example: '/api/analytics/custom?eventName=pueblo_view&dimensions=customEvent:pueblo_nombre,customEvent:pueblo_id'
-      });
-    }
-    
-    const dimensionsList = dimensions ? dimensions.split(',').map(d => d.trim()) : [];
-    const metricsList = metrics.split(',').map(m => m.trim());
-    
-    const filter = {
-      filter: {
-        fieldName: 'eventName',
-        stringFilter: { value: eventName }
-      }
-    };
-    
-    const [report] = await runReportWithFilter(
-      dimensionsList,
-      metricsList,
-      { startDate, endDate },
-      filter,
-      'eventCount',
-      parseInt(limit)
-    );
-    
-    // Convertir resultados a objeto dinámico
-    const data = report.rows?.map(row => {
-      const obj = {};
-      dimensionsList.forEach((dim, idx) => {
-        // Extraer nombre limpio del parámetro
-        const cleanName = dim.replace('customEvent:', '').replace('firebase:', '');
-        obj[cleanName] = extractValue(row, idx);
-      });
-      metricsList.forEach((metric, idx) => {
-        const cleanName = metric === 'eventCount' ? 'count' : 
-                         metric === 'activeUsers' ? 'users' : metric;
-        obj[cleanName] = extractMetric(row, idx);
-      });
-      return obj;
-    }) || [];
-    
-    res.json({ 
-      success: true, 
-      eventName,
-      dimensions: dimensionsList,
-      metrics: metricsList,
-      data 
+    const result = await db.collection(COLLECTION_NAME).deleteMany({
+      timestamp: { $lt: cutoffDate }
     });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
 
-// ========================================
-// DASHBOARD COMPLETO - DINÁMICO
-// ========================================
-
-app.get('/api/analytics/dashboard', async (req, res) => {
-  try {
-    const { startDate = '30daysAgo', endDate = 'today', puebloId } = req.query;
-    
-    // Ejecutar todas las consultas en paralelo
-    const [
-      overviewResult,
-      pueblosResult,
-      categoriasResult,
-      entidadesResult,
-      accionesResult,
-      mapasResult,
-      platformsResult,
-      countriesResult,
-      topEventsResult
-    ] = await Promise.allSettled([
-      runReport([], ['activeUsers', 'newUsers', 'sessions', 'screenPageViews', 'averageSessionDuration', 'bounceRate', 'engagementRate'], { startDate, endDate }).catch(() => null),
-      
-      // Pueblos
-      runReportWithFilter(
-        ['customEvent:pueblo_nombre'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        { filter: { fieldName: 'eventName', stringFilter: { value: 'pueblo_view' } } },
-        'eventCount', 20
-      ).catch(() => null),
-      
-      // Categorías
-      runReportWithFilter(
-        ['customEvent:category_name', 'customEvent:pueblo_id'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        { filter: { fieldName: 'eventName', stringFilter: { value: 'category_clicked' } } },
-        'eventCount', 20
-      ).catch(() => null),
-      
-      // Entidades
-      runReportWithFilter(
-        ['customEvent:entity_name', 'customEvent:category_name', 'customEvent:pueblo_id'],
-        ['eventCount', 'activeUsers'],
-        { startDate, endDate },
-        { filter: { fieldName: 'eventName', stringFilter: { value: 'entity_clicked' } } },
-        'eventCount', 30
-      ).catch(() => null),
-      
-      // Acciones
-      runReportWithFilter(
-        ['customEvent:action'],
-        ['eventCount'],
-        { startDate, endDate },
-        { filter: { fieldName: 'eventName', stringFilter: { value: 'entity_action' } } },
-        'eventCount', 20
-      ).catch(() => null),
-      
-      // Mapas
-      runReportWithFilter(
-        ['customEvent:lugar_nombre'],
-        ['eventCount'],
-        { startDate, endDate },
-        { filter: { fieldName: 'eventName', stringFilter: { matchType: 'CONTAINS', value: 'mapa' } } },
-        'eventCount', 20
-      ).catch(() => null),
-      
-      // Platforms
-      runReport(['platform'], ['activeUsers', 'sessions'], { startDate, endDate }, 'activeUsers', 5).catch(() => null),
-      
-      // Countries
-      runReport(['country'], ['activeUsers'], { startDate, endDate }, 'activeUsers', 10).catch(() => null),
-      
-      // Top events
-      runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 30).catch(() => null),
-    ]);
-    
-    // Parse overview
-    const overviewRow = overviewResult?.value?.[0]?.rows?.[0];
-    const overview = {
-      activeUsers: parseInt(overviewRow?.metricValues?.[0]?.value) || 0,
-      newUsers: parseInt(overviewRow?.metricValues?.[1]?.value) || 0,
-      sessions: parseInt(overviewRow?.metricValues?.[2]?.value) || 0,
-      pageViews: parseInt(overviewRow?.metricValues?.[3]?.value) || 0,
-      avgSessionDuration: parseFloat(overviewRow?.metricValues?.[4]?.value) || 0,
-      bounceRate: parseFloat(overviewRow?.metricValues?.[5]?.value || 0) * 100,
-      engagementRate: parseFloat(overviewRow?.metricValues?.[6]?.value) || 0,
-    };
-    
-    // Parse pueblos
-    const pueblos = pueblosResult?.value?.[0]?.rows?.map(row => ({
-      pueblo: extractValue(row, 0),
-      views: extractMetric(row, 0),
-      users: extractMetric(row, 1),
-    })) || [];
-    
-    // Parse categorias
-    const categorias = categoriasResult?.value?.[0]?.rows?.map(row => ({
-      categoria: extractValue(row, 0),
-      pueblo: extractValue(row, 1),
-      clicks: extractMetric(row, 0),
-      users: extractMetric(row, 1),
-    })) || [];
-    
-    // Parse entidades
-    let entidades = entidadesResult?.value?.[0]?.rows?.map(row => ({
-      entidad: extractValue(row, 0),
-      categoria: extractValue(row, 1),
-      pueblo: extractValue(row, 2),
-      clicks: extractMetric(row, 0),
-      users: extractMetric(row, 1),
-    })) || [];
-    
-    // Filtrar por pueblo si se especifica
-    if (puebloId) {
-      entidades = entidades.filter(e => e.pueblo === puebloId);
-    }
-    
-    // Parse acciones
-    const acciones = accionesResult?.value?.[0]?.rows?.map(row => ({
-      action: extractValue(row, 0),
-      count: extractMetric(row, 0),
-    })) || [];
-    
-    // Parse mapas
-    const mapas = mapasResult?.value?.[0]?.rows?.map(row => ({
-      lugar: extractValue(row, 0),
-      count: extractMetric(row, 0),
-    })) || [];
-    
-    // Parse platforms
-    const platforms = platformsResult?.value?.[0]?.rows?.map(row => ({
-      platform: extractValue(row, 0),
-      users: extractMetric(row, 0),
-      sessions: extractMetric(row, 1),
-    })) || [];
-    
-    // Parse countries
-    const countries = countriesResult?.value?.[0]?.rows?.map(row => ({
-      country: extractValue(row, 0),
-      users: extractMetric(row, 0),
-    })) || [];
-    
-    // Parse top events
-    const topEvents = topEventsResult?.value?.[0]?.rows?.map(row => ({
-      event: extractValue(row, 0),
-      count: extractMetric(row, 0),
-      users: extractMetric(row, 1),
-    })) || [];
-    
     res.json({
       success: true,
-      data: {
-        overview,
-        pueblos,
-        categorias,
-        entidades,
-        acciones,
-        mapas,
-        platforms,
-        countries,
-        topEvents,
-        generatedAt: new Date().toISOString()
-      }
+      deletedCount: result.deletedCount,
+      message: `Eliminados ${result.deletedCount} eventos anteriores a ${cutoffDate.toISOString()}`
     });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
-// ========================================
-// PARÁMETROS DISPONIBLES - Endpoint de ayuda
-// ========================================
-
-app.get('/api/analytics/parametros-disponibles', (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      eventos: {
-        'pueblo_view': {
-          descripcion: 'Vista de un pueblo',
-          parametros: ['pueblo_id', 'pueblo_nombre', 'screen_name', 'screen_class']
-        },
-        'category_view': {
-          descripcion: 'Vista de una categoría',
-          parametros: ['pueblo_id', 'category_id', 'category_name']
-        },
-        'category_clicked': {
-          descripcion: 'Click en una categoría',
-          parametros: ['category_id', 'category_name', 'pueblo_id']
-        },
-        'entity_clicked': {
-          descripcion: 'Click en una entidad/lugar',
-          parametros: ['entity_id', 'entity_name', 'category_id', 'category_name', 'pueblo_id']
-        },
-        'entity_action': {
-          descripcion: 'Acción sobre una entidad',
-          parametros: ['entity_id', 'entity_name', 'category_id', 'pueblo_id', 'action']
-        },
-        'abrir_mapa_pueblo': {
-          descripcion: 'Abrir mapa de un pueblo',
-          parametros: ['pueblo_id', 'pueblo_nombre', 'origen']
-        },
-        'abrir_mapa': {
-          descripcion: 'Abrir mapa de un lugar',
-          parametros: ['lugar_nombre', 'origen', 'latitud', 'longitud', 'map_url']
-        },
-        'abrir_informacion': {
-          descripcion: 'Abrir información de un lugar',
-          parametros: ['lugar_nombre', 'origen', 'info_url']
-        },
-        'search': {
-          descripcion: 'Búsqueda realizada',
-          parametros: ['search_term', 'result_count']
-        },
-        'filter': {
-          descripcion: 'Filtro aplicado',
-          parametros: ['filter_type', 'filter_value']
-        },
-        'button_clicked': {
-          descripcion: 'Click en botón',
-          parametros: ['item_id', 'item_name', 'button_category', 'screen_name']
-        },
-        'share': {
-          descripcion: 'Contenido compartido',
-          parametros: ['entity_id', 'entity_name', 'share_method']
-        },
-        'sos_action': {
-          descripcion: 'Acción de emergencia',
-          parametros: ['entity_id', 'entity_name', 'sos_type', 'action']
-        },
-        'app_error': {
-          descripcion: 'Error de la aplicación',
-          parametros: ['error_type', 'error_message', 'screen_name']
-        }
-      },
-      ejemplo: '/api/analytics/custom?eventName=entity_clicked&dimensions=customEvent:entity_name,customEvent:category_name,customEvent:pueblo_id&metrics=eventCount,activeUsers'
-    }
-  });
+// Cerrar conexión MongoDB al terminar
+process.on('SIGINT', async () => {
+  if (mongoClient) {
+    await mongoClient.close();
+    console.log('MongoDB connection closed');
+  }
+  process.exit(0);
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v2.0 (Dynamic) running on port ${PORT}`);
-  console.log(`📊 Property ID: ${PROPERTY_ID}`);
+  console.log(`🚀 Turisteando Analytics Server v4.0 (MongoDB Dynamic) running on port ${PORT}`);
+  console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
+  console.log(`🍃 MongoDB: ${db ? 'Conectado' : 'No configurado'}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
 });
-
