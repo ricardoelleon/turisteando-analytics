@@ -7,11 +7,7 @@
     <title>Turisteando Analytics - Dashboard Completo</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
             --primary: #6366f1;
@@ -36,7 +32,6 @@
             color: var(--text-primary);
         }
 
-        /* Header */
         .header {
             background: rgba(15, 23, 42, 0.98);
             backdrop-filter: blur(10px);
@@ -57,11 +52,7 @@
             gap: 1rem;
         }
 
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+        .logo { display: flex; align-items: center; gap: 12px; }
 
         .logo-icon {
             width: 50px;
@@ -89,7 +80,6 @@
             letter-spacing: 2px;
         }
 
-        /* Tabs */
         .tabs-container {
             display: flex;
             gap: 0.5rem;
@@ -113,15 +103,8 @@
             gap: 8px;
         }
 
-        .tab-btn:hover {
-            background: rgba(255,255,255,0.05);
-            color: var(--text-primary);
-        }
-
-        .tab-btn.active {
-            background: var(--primary);
-            color: white;
-        }
+        .tab-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
+        .tab-btn.active { background: var(--primary); color: white; }
 
         .tab-btn .badge {
             padding: 0.2rem 0.5rem;
@@ -130,9 +113,7 @@
             font-size: 0.7rem;
         }
 
-        .tab-btn.active .badge {
-            background: rgba(255,255,255,0.3);
-        }
+        .tab-btn.active .badge { background: rgba(255,255,255,0.3); }
 
         .live-dot {
             width: 8px;
@@ -147,7 +128,6 @@
             50% { opacity: 0.5; transform: scale(1.2); }
         }
 
-        /* Date Range Picker */
         .date-picker-container {
             display: flex;
             align-items: center;
@@ -155,12 +135,10 @@
             background: var(--darker);
             padding: 0.5rem 1rem;
             border-radius: 12px;
+            flex-wrap: wrap;
         }
 
-        .date-picker-container label {
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-        }
+        .date-picker-container label { color: var(--text-secondary); font-size: 0.85rem; }
 
         .date-picker-container input {
             background: var(--card-bg);
@@ -171,10 +149,7 @@
             font-size: 0.85rem;
         }
 
-        .date-picker-container input:focus {
-            outline: none;
-            border-color: var(--primary);
-        }
+        .date-picker-container input:focus { outline: none; border-color: var(--primary); }
 
         .apply-btn {
             padding: 0.5rem 1rem;
@@ -188,21 +163,13 @@
             transition: all 0.2s;
         }
 
-        .apply-btn:hover {
-            background: var(--primary-dark);
-        }
+        .apply-btn:hover { background: var(--primary-dark); }
 
-        /* Container */
-        .container {
-            max-width: 1600px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
+        .container { max-width: 1600px; margin: 0 auto; padding: 2rem; }
 
-        /* KPI Grid */
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 1rem;
             margin-bottom: 2rem;
         }
@@ -217,17 +184,12 @@
             transition: all 0.3s;
         }
 
-        .kpi-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-        }
+        .kpi-card:hover { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
 
         .kpi-card::before {
             content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
+            top: 0; left: 0; right: 0;
             height: 3px;
         }
 
@@ -237,41 +199,12 @@
         .kpi-card.blue::before { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
         .kpi-card.red::before { background: linear-gradient(90deg, #ef4444, #f87171); }
         .kpi-card.pink::before { background: linear-gradient(90deg, #ec4899, #f472b6); }
+        .kpi-card.cyan::before { background: linear-gradient(90deg, #06b6d4, #22d3ee); }
 
-        .kpi-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
+        .kpi-icon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .kpi-value { font-size: 1.8rem; font-weight: 800; margin-bottom: 0.25rem; }
+        .kpi-label { color: var(--text-secondary); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; }
 
-        .kpi-icon {
-            font-size: 1.5rem;
-        }
-
-        .kpi-trend {
-            font-size: 0.75rem;
-            padding: 0.2rem 0.5rem;
-            border-radius: 4px;
-        }
-
-        .kpi-trend.up { background: rgba(16, 185, 129, 0.2); color: var(--secondary); }
-        .kpi-trend.down { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
-
-        .kpi-value {
-            font-size: 1.8rem;
-            font-weight: 800;
-            margin-bottom: 0.25rem;
-        }
-
-        .kpi-label {
-            color: var(--text-secondary);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        /* Dashboard Grid */
         .dashboard-grid {
             display: grid;
             grid-template-columns: repeat(12, 1fr);
@@ -287,7 +220,6 @@
             .col-8, .col-6, .col-4 { grid-column: span 12; }
         }
 
-        /* Cards */
         .card {
             background: var(--card-bg);
             border: 1px solid var(--card-border);
@@ -311,10 +243,6 @@
             gap: 10px;
         }
 
-        .card-title span {
-            font-size: 1.2rem;
-        }
-
         .card-badge {
             padding: 0.25rem 0.75rem;
             background: rgba(99, 102, 241, 0.2);
@@ -324,21 +252,11 @@
             font-weight: 600;
         }
 
-        .card-body {
-            padding: 1.5rem;
-        }
+        .card-body { padding: 1.5rem; }
 
-        /* Charts */
-        .chart-container {
-            position: relative;
-            height: 280px;
-        }
+        .chart-container { position: relative; height: 280px; }
 
-        /* Tables */
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
+        .data-table { width: 100%; border-collapse: collapse; }
 
         .data-table th {
             text-align: left;
@@ -357,13 +275,8 @@
             vertical-align: middle;
         }
 
-        .data-table tr:hover {
-            background: rgba(99, 102, 241, 0.05);
-        }
-
-        .data-table tr:last-child td {
-            border-bottom: none;
-        }
+        .data-table tr:hover { background: rgba(99, 102, 241, 0.05); }
+        .data-table tr:last-child td { border-bottom: none; }
 
         .rank {
             width: 30px;
@@ -381,15 +294,8 @@
         .rank.silver { background: linear-gradient(135deg, #9ca3af, #6b7280); }
         .rank.bronze { background: linear-gradient(135deg, #d97706, #92400e); }
 
-        .entity-name {
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .entity-meta {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-        }
+        .entity-name { font-weight: 600; color: var(--text-primary); }
+        .entity-meta { font-size: 0.75rem; color: var(--text-muted); }
 
         .count-badge {
             padding: 0.25rem 0.75rem;
@@ -400,12 +306,8 @@
             font-size: 0.85rem;
         }
 
-        .count-badge.blue {
-            background: rgba(59, 130, 246, 0.2);
-            color: var(--info);
-        }
+        .count-badge.blue { background: rgba(59, 130, 246, 0.2); color: var(--info); }
 
-        /* Progress Bars */
         .progress-bar {
             height: 6px;
             background: rgba(255, 255, 255, 0.1);
@@ -421,12 +323,7 @@
             transition: width 0.5s ease;
         }
 
-        /* Event Pills */
-        .event-pills {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-        }
+        .event-pills { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
         .event-pill {
             padding: 0.5rem 1rem;
@@ -440,10 +337,7 @@
             transition: all 0.2s;
         }
 
-        .event-pill:hover {
-            background: rgba(99, 102, 241, 0.2);
-            border-color: var(--primary);
-        }
+        .event-pill:hover { background: rgba(99, 102, 241, 0.2); border-color: var(--primary); }
 
         .event-pill .count {
             background: var(--primary);
@@ -454,7 +348,48 @@
             font-size: 0.75rem;
         }
 
-        /* Action Items */
+        .pueblo-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            margin-bottom: 0.75rem;
+            transition: all 0.2s;
+        }
+
+        .pueblo-item:hover {
+            background: rgba(99, 102, 241, 0.1);
+            transform: translateX(5px);
+        }
+
+        .pueblo-rank {
+            min-width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1rem;
+        }
+
+        .pueblo-rank.gold { background: linear-gradient(135deg, #fbbf24, #d97706); }
+        .pueblo-rank.silver { background: linear-gradient(135deg, #9ca3af, #6b7280); }
+        .pueblo-rank.bronze { background: linear-gradient(135deg, #d97706, #92400e); }
+        .pueblo-rank.default { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); }
+
+        .pueblo-info { flex: 1; }
+        .pueblo-name { font-weight: 700; font-size: 1rem; }
+        .pueblo-count { font-size: 0.8rem; color: var(--text-muted); }
+
+        .pueblo-visits {
+            font-size: 1.3rem;
+            font-weight: 800;
+            color: var(--secondary);
+        }
+
         .action-item {
             display: flex;
             align-items: center;
@@ -466,9 +401,7 @@
             transition: all 0.2s;
         }
 
-        .action-item:hover {
-            background: rgba(0, 0, 0, 0.3);
-        }
+        .action-item:hover { background: rgba(0, 0, 0, 0.3); }
 
         .action-icon {
             width: 40px;
@@ -486,29 +419,11 @@
         .action-icon.web { background: rgba(168, 85, 247, 0.2); }
         .action-icon.default { background: rgba(100, 116, 139, 0.2); }
 
-        .action-info {
-            flex: 1;
-        }
+        .action-info { flex: 1; }
+        .action-name { font-weight: 600; text-transform: capitalize; }
+        .action-count { font-size: 1.25rem; font-weight: 700; color: var(--secondary); }
 
-        .action-name {
-            font-weight: 600;
-            text-transform: capitalize;
-        }
-
-        .action-count {
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: var(--secondary);
-        }
-
-        /* Loading */
-        .loading {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 2rem;
-            color: var(--text-secondary);
-        }
+        .loading { display: flex; align-items: center; justify-content: center; padding: 2rem; color: var(--text-secondary); }
 
         .spinner {
             width: 30px;
@@ -520,34 +435,11 @@
             margin-right: 0.75rem;
         }
 
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* Empty State */
-        .empty-state {
-            text-align: center;
-            padding: 2rem;
-            color: var(--text-muted);
-        }
+        .empty-state { text-align: center; padding: 2rem; color: var(--text-muted); }
+        .empty-state span { font-size: 2.5rem; display: block; margin-bottom: 0.5rem; }
 
-        .empty-state span {
-            font-size: 2.5rem;
-            display: block;
-            margin-bottom: 0.5rem;
-        }
-
-        /* Error */
-        .error-box {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            border-radius: 8px;
-            padding: 1rem;
-            margin: 1rem 0;
-            color: #f87171;
-        }
-
-        /* Status */
         .status-indicator {
             display: flex;
             align-items: center;
@@ -566,12 +458,8 @@
             animation: pulse 2s infinite;
         }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-        /* Footer */
         .footer {
             text-align: center;
             padding: 2rem;
@@ -581,33 +469,13 @@
             margin-top: 2rem;
         }
 
-        /* Tab Content */
-        .tab-content {
-            display: none;
-        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
 
-        .tab-content.active {
-            display: block;
-        }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: var(--darker);
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: var(--card-border);
-            border-radius: 4px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--primary);
-        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--darker); }
+        ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--primary); }
     </style>
 </head>
 <body>
@@ -654,7 +522,6 @@
             </div>
         </div>
 
-        <!-- Error Container -->
         <div id="errorContainer"></div>
 
         <!-- TIEMPO REAL TAB -->
@@ -664,6 +531,29 @@
             </div>
 
             <div class="dashboard-grid">
+                <!-- PUEBLOS MÁS VISITADOS - DESTACADO -->
+                <div class="card col-6">
+                    <div class="card-header">
+                        <div class="card-title"><span>🏘️</span> Pueblos Más Visitados</div>
+                        <span class="card-badge" id="rtPueblosCount">0</span>
+                    </div>
+                    <div class="card-body" id="rtPueblosBody">
+                        <div class="loading"><div class="spinner"></div> Cargando pueblos...</div>
+                    </div>
+                </div>
+
+                <!-- CATEGORÍAS POPULARES -->
+                <div class="card col-6">
+                    <div class="card-header">
+                        <div class="card-title"><span>📁</span> Categorías Populares</div>
+                        <span class="card-badge" id="rtCategoriasCount">0</span>
+                    </div>
+                    <div class="card-body" id="rtCategoriasBody">
+                        <div class="loading"><div class="spinner"></div> Cargando...</div>
+                    </div>
+                </div>
+
+                <!-- GRÁFICO DE EVENTOS POR DÍA -->
                 <div class="card col-8">
                     <div class="card-header">
                         <div class="card-title"><span>📈</span> Eventos por Día</div>
@@ -676,6 +566,7 @@
                     </div>
                 </div>
 
+                <!-- TIPOS DE EVENTOS -->
                 <div class="card col-4">
                     <div class="card-header">
                         <div class="card-title"><span>🎯</span> Tipos de Eventos</div>
@@ -687,16 +578,7 @@
                     </div>
                 </div>
 
-                <div class="card col-6">
-                    <div class="card-header">
-                        <div class="card-title"><span>📁</span> Categorías Populares</div>
-                        <span class="card-badge" id="rtCategoriasCount">0</span>
-                    </div>
-                    <div class="card-body" id="rtCategoriasBody">
-                        <div class="loading"><div class="spinner"></div> Cargando...</div>
-                    </div>
-                </div>
-
+                <!-- LUGARES MÁS CONSULTADOS -->
                 <div class="card col-6">
                     <div class="card-header">
                         <div class="card-title"><span>⭐</span> Lugares Más Consultados</div>
@@ -707,6 +589,18 @@
                     </div>
                 </div>
 
+                <!-- ACCIONES -->
+                <div class="card col-6">
+                    <div class="card-header">
+                        <div class="card-title"><span>⚡</span> Acciones Realizadas</div>
+                        <span class="card-badge" id="rtAccionesCount">0</span>
+                    </div>
+                    <div class="card-body" id="rtAccionesBody">
+                        <div class="loading"><div class="spinner"></div> Cargando...</div>
+                    </div>
+                </div>
+
+                <!-- TODOS LOS EVENTOS -->
                 <div class="card col-12">
                     <div class="card-header">
                         <div class="card-title"><span>📋</span> Todos los Eventos</div>
@@ -809,13 +703,12 @@
         </div>
 
         <footer class="footer">
-            <p>Turisteando Analytics v2.5 • MongoDB Atlas + Firebase Analytics</p>
+            <p>Turisteando Analytics v2.6 • MongoDB Atlas + Firebase Analytics</p>
             <p>Última actualización: <span id="lastUpdate">-</span></p>
         </footer>
     </main>
 
     <script>
-        // Configuración
         const API_BASE = 'https://turisteando-analytics.onrender.com';
         
         let charts = {
@@ -825,17 +718,14 @@
             historicalPlatform: null
         };
 
-        // Fechas por defecto
         const today = new Date().toISOString().split('T')[0];
         const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-        // Inicialización
         document.addEventListener('DOMContentLoaded', () => {
             initTabs();
             initDatePickers();
             loadRealtimeData();
             
-            // Auto-refresh tiempo real cada 30 segundos
             setInterval(() => {
                 if (document.querySelector('.tab-btn.active').dataset.tab === 'realtime') {
                     loadRealtimeData();
@@ -843,7 +733,6 @@
             }, 30000);
         });
 
-        // Tabs
         function initTabs() {
             document.querySelectorAll('.tab-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
@@ -854,14 +743,12 @@
                     const tabId = btn.dataset.tab;
                     document.getElementById(tabId).classList.add('active');
                     
-                    // Mostrar/ocultar date picker
                     document.getElementById('datePickerSection').style.display = 
                         tabId === 'historical' ? 'block' : 'none';
                 });
             });
         }
 
-        // Date Pickers
         function initDatePickers() {
             document.getElementById('startDate').value = weekAgo;
             document.getElementById('endDate').value = today;
@@ -877,10 +764,12 @@
                 if (result.success) {
                     document.getElementById('connectionStatus').textContent = 'MongoDB Conectado';
                     renderRealtimeKpis(result.data);
-                    renderRealtimeEventsChart(result.data.eventsByDay);
-                    renderRealtimeEventsPie(result.data.eventsByType);
+                    renderRealtimePueblos(result.data.topPueblos);
                     renderRealtimeCategorias(result.data.topCategorias);
                     renderRealtimeEntidades(result.data.topEntidades);
+                    renderRealtimeAcciones(result.data.acciones);
+                    renderRealtimeEventsChart(result.data.eventsByDay);
+                    renderRealtimeEventsPie(result.data.eventsByType);
                     renderRealtimeEventTypes(result.data.eventsByType);
                     updateTimestamp();
                 } else {
@@ -897,6 +786,7 @@
             
             const kpis = [
                 { icon: '📊', label: 'Total Eventos', value: data.totalEvents || 0, color: 'purple' },
+                { icon: '🏘️', label: 'Pueblos', value: data.topPueblos ? data.topPueblos.length : 0, color: 'cyan' },
                 { icon: '📁', label: 'Categorías', value: data.topCategorias ? data.topCategorias.length : 0, color: 'green' },
                 { icon: '⭐', label: 'Lugares', value: data.topEntidades ? data.topEntidades.length : 0, color: 'orange' },
                 { icon: '⚡', label: 'Acciones', value: totalAcciones, color: 'blue' }
@@ -904,11 +794,125 @@
 
             document.getElementById('realtimeKpis').innerHTML = kpis.map(kpi => `
                 <div class="kpi-card ${kpi.color}">
-                    <div class="kpi-header">
-                        <span class="kpi-icon">${kpi.icon}</span>
-                    </div>
+                    <div class="kpi-icon">${kpi.icon}</div>
                     <div class="kpi-value">${kpi.value.toLocaleString()}</div>
                     <div class="kpi-label">${kpi.label}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderRealtimePueblos(data) {
+            document.getElementById('rtPueblosCount').textContent = data ? data.length : 0;
+            const container = document.getElementById('rtPueblosBody');
+
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>🏘️</span><p>No hay pueblos registrados aún</p></div>';
+                return;
+            }
+
+            const maxCount = Math.max(...data.map(d => d.count));
+
+            container.innerHTML = data.slice(0, 8).map((item, idx) => {
+                const rankClass = idx === 0 ? 'gold' : idx === 1 ? 'silver' : idx === 2 ? 'bronze' : 'default';
+                const widthPercent = (item.count / maxCount) * 100;
+                return `
+                    <div class="pueblo-item">
+                        <div class="pueblo-rank ${rankClass}">${idx + 1}</div>
+                        <div class="pueblo-info">
+                            <div class="pueblo-name">${item.pueblo}</div>
+                            <div class="progress-bar" style="margin-top: 5px;">
+                                <div class="progress-fill" style="width: ${widthPercent}%"></div>
+                            </div>
+                        </div>
+                        <div class="pueblo-visits">${item.count}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderRealtimeCategorias(data) {
+            document.getElementById('rtCategoriasCount').textContent = data ? data.length : 0;
+            const container = document.getElementById('rtCategoriasBody');
+            
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>📁</span><p>Sin categorías aún</p></div>';
+                return;
+            }
+
+            const maxCount = Math.max(...data.map(d => d.count));
+            
+            container.innerHTML = `
+                <table class="data-table">
+                    <thead><tr><th>#</th><th>Categoría</th><th>Clicks</th></tr></thead>
+                    <tbody>
+                        ${data.slice(0, 8).map((item, idx) => `
+                            <tr>
+                                <td><span class="rank ${idx < 3 ? ['gold', 'silver', 'bronze'][idx] : ''}">${idx + 1}</span></td>
+                                <td>${item.categoria || 'Sin nombre'}</td>
+                                <td>
+                                    <span class="count-badge">${item.count}</span>
+                                    <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderRealtimeEntidades(data) {
+            document.getElementById('rtEntidadesCount').textContent = data ? data.length : 0;
+            const container = document.getElementById('rtEntidadesBody');
+            
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>⭐</span><p>Sin lugares aún</p></div>';
+                return;
+            }
+
+            const maxCount = Math.max(...data.map(d => d.count));
+            
+            container.innerHTML = `
+                <table class="data-table">
+                    <thead><tr><th>#</th><th>Lugar</th><th>Clicks</th></tr></thead>
+                    <tbody>
+                        ${data.slice(0, 8).map((item, idx) => `
+                            <tr>
+                                <td><span class="rank ${idx < 3 ? ['gold', 'silver', 'bronze'][idx] : ''}">${idx + 1}</span></td>
+                                <td>
+                                    <div class="entity-name">${item.entidad || 'Sin nombre'}</div>
+                                    <div class="entity-meta">${item.categoria || ''}</div>
+                                </td>
+                                <td>
+                                    <span class="count-badge">${item.count}</span>
+                                    <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderRealtimeAcciones(data) {
+            document.getElementById('rtAccionesCount').textContent = data ? data.length : 0;
+            const container = document.getElementById('rtAccionesBody');
+            
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>⚡</span><p>Sin acciones aún</p></div>';
+                return;
+            }
+
+            const actionIcons = { 'llamar': '📞', 'whatsapp': '💬', 'mapa': '🗺️', 'web': '🌐', 'share': '📤' };
+
+            container.innerHTML = data.slice(0, 6).map(item => `
+                <div class="action-item">
+                    <div class="action-icon ${item.action?.includes('llamar') ? 'llamar' : item.action?.includes('whatsapp') ? 'whatsapp' : item.action?.includes('mapa') ? 'mapa' : item.action?.includes('web') ? 'web' : 'default'}">
+                        ${actionIcons[item.action] || '📌'}
+                    </div>
+                    <div class="action-info">
+                        <div class="action-name">${item.action || 'Sin acción'}</div>
+                    </div>
+                    <div class="action-count">${item.count || 0}</div>
                 </div>
             `).join('');
         }
@@ -991,69 +995,6 @@
             });
         }
 
-        function renderRealtimeCategorias(data) {
-            document.getElementById('rtCategoriasCount').textContent = data ? data.length : 0;
-            const container = document.getElementById('rtCategoriasBody');
-            
-            if (!data || data.length === 0) {
-                container.innerHTML = '<div class="empty-state"><span>📁</span><p>Sin categorías aún</p></div>';
-                return;
-            }
-
-            const maxCount = Math.max(...data.map(d => d.count));
-            
-            container.innerHTML = `
-                <table class="data-table">
-                    <thead><tr><th>#</th><th>Categoría</th><th>Clicks</th></tr></thead>
-                    <tbody>
-                        ${data.slice(0, 8).map((item, idx) => `
-                            <tr>
-                                <td><span class="rank ${idx < 3 ? ['gold', 'silver', 'bronze'][idx] : ''}">${idx + 1}</span></td>
-                                <td>${item.categoria || 'Sin nombre'}</td>
-                                <td>
-                                    <span class="count-badge">${item.count}</span>
-                                    <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            `;
-        }
-
-        function renderRealtimeEntidades(data) {
-            document.getElementById('rtEntidadesCount').textContent = data ? data.length : 0;
-            const container = document.getElementById('rtEntidadesBody');
-            
-            if (!data || data.length === 0) {
-                container.innerHTML = '<div class="empty-state"><span>⭐</span><p>Sin lugares aún</p></div>';
-                return;
-            }
-
-            const maxCount = Math.max(...data.map(d => d.count));
-            
-            container.innerHTML = `
-                <table class="data-table">
-                    <thead><tr><th>#</th><th>Lugar</th><th>Clicks</th></tr></thead>
-                    <tbody>
-                        ${data.slice(0, 8).map((item, idx) => `
-                            <tr>
-                                <td><span class="rank ${idx < 3 ? ['gold', 'silver', 'bronze'][idx] : ''}">${idx + 1}</span></td>
-                                <td>
-                                    <div class="entity-name">${item.entidad || 'Sin nombre'}</div>
-                                    <div class="entity-meta">${item.categoria || ''}</div>
-                                </td>
-                                <td>
-                                    <span class="count-badge">${item.count}</span>
-                                    <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            `;
-        }
-
         function renderRealtimeEventTypes(data) {
             const container = document.getElementById('rtEventTypesBody');
             
@@ -1080,11 +1021,9 @@
             let startDate = startParam || document.getElementById('startDate').value;
             let endDate = endParam || document.getElementById('endDate').value;
 
-            // Validar si son fechas o parámetros de Firebase
             const isFirebaseParam = startDate.includes('daysAgo') || startDate === 'today';
             
             if (!isFirebaseParam) {
-                // Convertir fechas a formato Firebase
                 const today = new Date();
                 const start = new Date(startDate);
                 const end = new Date(endDate);
@@ -1099,7 +1038,6 @@
             try {
                 document.getElementById('connectionStatus').textContent = 'Cargando Firebase...';
                 
-                // Cargar todos los datos en paralelo
                 const [overview, pueblos, categorias, entidades, acciones, usersByDay, platforms, countries, topEvents] = await Promise.all([
                     fetchJSON(`${API_BASE}/api/analytics/overview?startDate=${startDate}&endDate=${endDate}`),
                     fetchJSON(`${API_BASE}/api/analytics/pueblos?startDate=${startDate}&endDate=${endDate}`),
@@ -1114,22 +1052,24 @@
 
                 document.getElementById('connectionStatus').textContent = 'Firebase Conectado';
                 
-                renderHistoricalKpis(overview.data, pueblos.data, categorias.data, entidades.data);
-                renderHistoricalUsersChart(usersByDay.data);
-                renderHistoricalPlatformChart(platforms.data);
-                renderHistoricalPueblos(pueblos.data);
-                renderHistoricalCategorias(categorias.data);
-                renderHistoricalEntidades(entidades.data);
-                renderHistoricalAcciones(acciones.data);
-                renderHistoricalTopEvents(topEvents.data);
-                renderHistoricalCountries(countries.data);
+                renderHistoricalKpis(overview?.data, pueblos?.data, categorias?.data, entidades?.data);
+                renderHistoricalUsersChart(usersByDay?.data);
+                renderHistoricalPlatformChart(platforms?.data);
+                renderHistoricalPueblos(pueblos?.data);
+                renderHistoricalCategorias(categorias?.data);
+                renderHistoricalEntidades(entidades?.data);
+                renderHistoricalAcciones(acciones?.data);
+                renderHistoricalTopEvents(topEvents?.data);
+                renderHistoricalCountries(countries?.data);
                 updateTimestamp();
 
             } catch (error) {
                 console.error('Error Firebase:', error);
                 document.getElementById('connectionStatus').textContent = 'Error Firebase';
                 document.getElementById('errorContainer').innerHTML = `
-                    <div class="error-box">❌ Error al cargar datos históricos: ${error.message}</div>
+                    <div class="error-box" style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 1rem; color: #f87171;">
+                        ❌ Error al cargar datos históricos: ${error.message}
+                    </div>
                 `;
             }
         }
@@ -1151,9 +1091,7 @@
 
             document.getElementById('historicalKpis').innerHTML = kpis.map(kpi => `
                 <div class="kpi-card ${kpi.color}">
-                    <div class="kpi-header">
-                        <span class="kpi-icon">${kpi.icon}</span>
-                    </div>
+                    <div class="kpi-icon">${kpi.icon}</div>
                     <div class="kpi-value">${typeof kpi.value === 'number' ? kpi.value.toLocaleString() : kpi.value}</div>
                     <div class="kpi-label">${kpi.label}</div>
                 </div>
@@ -1203,10 +1141,7 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: {
-                            position: 'top',
-                            labels: { color: '#94a3b8', usePointStyle: true }
-                        }
+                        legend: { position: 'top', labels: { color: '#94a3b8', usePointStyle: true } }
                     },
                     scales: {
                         x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
@@ -1244,10 +1179,7 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: { color: '#94a3b8', padding: 10, usePointStyle: true }
-                        }
+                        legend: { position: 'bottom', labels: { color: '#94a3b8', padding: 10, usePointStyle: true } }
                     }
                 }
             });
@@ -1355,13 +1287,7 @@
                 return;
             }
 
-            const actionIcons = {
-                'llamar': '📞',
-                'whatsapp': '💬',
-                'mapa': '🗺️',
-                'web': '🌐',
-                'share': '📤'
-            };
+            const actionIcons = { 'llamar': '📞', 'whatsapp': '💬', 'mapa': '🗺️', 'web': '🌐', 'share': '📤' };
 
             container.innerHTML = data.slice(0, 8).map(item => `
                 <div class="action-item">
