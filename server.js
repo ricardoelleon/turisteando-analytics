@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { BetaAnalyticsDataClient } = require('@google-analytics/data');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,6 +9,10 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+// ========================================
+// FIREBASE ANALYTICS (tu configuración existente)
+// ========================================
 
 const analyticsDataClient = new BetaAnalyticsDataClient({
   credentials: {
@@ -17,6 +22,35 @@ const analyticsDataClient = new BetaAnalyticsDataClient({
 });
 
 const PROPERTY_ID = process.env.PROPERTY_ID || '487082948';
+
+// ========================================
+// MONGODB ATLAS (nueva conexión)
+// ========================================
+
+const MONGO_URI = process.env.MONGODB_URI;
+let mongoClient = null;
+let mongoDb = null;
+
+async function connectMongoDB() {
+  if (!MONGO_URI) {
+    console.log('⚠️ MONGODB_URI no configurado - MongoDB deshabilitado');
+    return false;
+  }
+  
+  try {
+    mongoClient = new MongoClient(MONGO_URI);
+    await mongoClient.connect();
+    mongoDb = mongoClient.db('turisteando_analytics');
+    console.log('✅ MongoDB Atlas conectado');
+    return true;
+  } catch (error) {
+    console.error('❌ Error conectando MongoDB:', error.message);
+    return false;
+  }
+}
+
+// Conectar al iniciar
+connectMongoDB();
 
 // ========================================
 // HELPER FUNCTIONS - MEJORADOS Y DINÁMICOS
@@ -82,7 +116,8 @@ app.get('/api/health', (req, res) => {
     status: 'OK', 
     timestamp: new Date().toISOString(),
     propertyId: PROPERTY_ID,
-    version: '2.0.0-dynamic'
+    mongodb: mongoDb ? 'connected' : 'disconnected',
+    version: '2.1.0-mongodb'
   });
 });
 
@@ -1169,8 +1204,230 @@ app.get('/api/analytics/parametros-disponibles', (req, res) => {
   });
 });
 
+// ========================================
+// MONGODB ATLAS - NUEVOS ENDPOINTS
+// ========================================
+
+// Recibir eventos desde la app Android
+app.post('/api/mongodb/event', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ 
+        success: false, 
+        error: 'MongoDB no está conectado',
+        note: 'Agrega MONGODB_URI en las variables de entorno de Render'
+      });
+    }
+    
+    const { event_name, timestamp, data } = req.body;
+    
+    if (!event_name) {
+      return res.json({ success: false, error: 'event_name es requerido' });
+    }
+    
+    // Guardar en la colección de eventos
+    const eventDocument = {
+      event_name,
+      timestamp: timestamp || Date.now(),
+      data: data || {},
+      server_time: new Date(),
+      date: new Date().toISOString().split('T')[0] // Para agrupar por día
+    };
+    
+    await mongoDb.collection('events').insertOne(eventDocument);
+    
+    res.json({ 
+      success: true, 
+      message: 'Evento guardado en MongoDB',
+      event_name 
+    });
+    
+  } catch (error) {
+    console.error('Error guardando en MongoDB:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Dashboard MongoDB - Estadísticas en tiempo real
+app.get('/api/mongodb/dashboard', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ 
+        success: false, 
+        error: 'MongoDB no está conectado' 
+      });
+    }
+    
+    const { days = 7 } = req.query;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+    
+    // Total de eventos
+    const totalEvents = await mongoDb.collection('events').countDocuments({
+      server_time: { $gte: startDate }
+    });
+    
+    // Eventos por tipo
+    const eventsByType = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate } } },
+      { $group: { _id: '$event_name', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 20 }
+    ]).toArray();
+    
+    // Pueblos más vistos
+    const topPueblos = await mongoDb.collection('events').aggregate([
+      { 
+        $match: { 
+          server_time: { $gte: startDate },
+          event_name: 'pueblo_view'
+        } 
+      },
+      { $group: { _id: '$data.pueblo_nombre', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ]).toArray();
+    
+    // Categorías más clickeadas
+    const topCategorias = await mongoDb.collection('events').aggregate([
+      { 
+        $match: { 
+          server_time: { $gte: startDate },
+          event_name: { $in: ['category_click', 'category_view'] }
+        } 
+      },
+      { $group: { _id: '$data.category_name', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ]).toArray();
+    
+    // Entidades más clickeadas
+    const topEntidades = await mongoDb.collection('events').aggregate([
+      { 
+        $match: { 
+          server_time: { $gte: startDate },
+          event_name: 'entity_clicked'
+        } 
+      },
+      { $group: { 
+        _id: { nombre: '$data.entity_name', categoria: '$data.category_name' }, 
+        count: { $sum: 1 } 
+      }},
+      { $sort: { count: -1 } },
+      { $limit: 15 }
+    ]).toArray();
+    
+    // Acciones realizadas
+    const acciones = await mongoDb.collection('events').aggregate([
+      { 
+        $match: { 
+          server_time: { $gte: startDate },
+          event_name: 'entity_action'
+        } 
+      },
+      { $group: { _id: '$data.action', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+    
+    // Eventos por día
+    const eventsByDay = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate } } },
+      { $group: { 
+        _id: '$date', 
+        count: { $sum: 1 },
+        unique_users: { $addToSet: '$data.device_model' }
+      }},
+      { $project: { _id: 0, date: '$_id', count: 1, devices: { $size: '$unique_users' } } },
+      { $sort: { date: 1 } }
+    ]).toArray();
+    
+    res.json({
+      success: true,
+      data: {
+        totalEvents,
+        eventsByType: eventsByType.map(e => ({ event: e._id, count: e.count })),
+        topPueblos: topPueblos.filter(p => p._id).map(p => ({ pueblo: p._id, count: p.count })),
+        topCategorias: topCategorias.filter(c => c._id).map(c => ({ categoria: c._id, count: c.count })),
+        topEntidades: topEntidades.filter(e => e._id?.nombre).map(e => ({ 
+          entidad: e._id.nombre, 
+          categoria: e._id.categoria, 
+          count: e.count 
+        })),
+        acciones: acciones.filter(a => a._id).map(a => ({ action: a._id, count: a.count })),
+        eventsByDay
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error en dashboard MongoDB:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint para ver eventos recientes
+app.get('/api/mongodb/events/recent', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { limit = 50, event_name } = req.query;
+    
+    const filter = event_name ? { event_name } : {};
+    
+    const events = await mongoDb.collection('events')
+      .find(filter)
+      .sort({ server_time: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+    
+    res.json({ success: true, count: events.length, data: events });
+    
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Descubrir campos disponibles (dinámico)
+app.get('/api/mongodb/campos-disponibles', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    // Obtener eventos únicos
+    const eventTypes = await mongoDb.collection('events').distinct('event_name');
+    
+    // Para cada tipo de evento, obtener campos disponibles en data
+    const camposPorEvento = {};
+    
+    for (const eventName of eventTypes) {
+      const sample = await mongoDb.collection('events').findOne({ event_name: eventName });
+      if (sample && sample.data) {
+        camposPorEvento[eventName] = Object.keys(sample.data);
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        eventos_disponibles: eventTypes,
+        campos_por_evento: camposPorEvento
+      }
+    });
+    
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// INICIAR SERVIDOR
+// ========================================
+
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v2.0 (Dynamic) running on port ${PORT}`);
-  console.log(`📊 Property ID: ${PROPERTY_ID}`);
+  console.log(`🚀 Turisteando Analytics Server v2.1 (Firebase + MongoDB) running on port ${PORT}`);
+  console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
+  console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-}); 
+});
