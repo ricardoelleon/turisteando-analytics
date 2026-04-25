@@ -117,7 +117,7 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     propertyId: PROPERTY_ID,
     mongodb: mongoDb ? 'connected' : 'disconnected',
-    version: '2.1.0-mongodb'
+    version: '2.2.0-optimized' // Versión actualizada
   });
 });
 
@@ -255,24 +255,19 @@ app.get('/api/analytics/top-screens', async (req, res) => {
 // ========================================
 
 // EVENTOS DESCUBIERTOS AUTOMÁTICAMENTE
-// Este endpoint descubre todos los eventos personalizados y sus parámetros
 app.get('/api/analytics/eventos-descubiertos', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // 1. Obtener todos los eventos
     const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 100);
     
     const eventos = [];
-    
-    // 2. Para cada evento personalizado, intentar descubrir sus parámetros
     const customEventPrefixes = ['pueblo_', 'category_', 'entity_', 'abrir_', 'sos_', 'button_', 'filter', 'search'];
     
     for (const row of eventsReport.rows || []) {
       const eventName = extractValue(row, 0);
       const count = extractMetric(row, 0);
       
-      // Verificar si es un evento personalizado de Turisteando
       const isCustom = customEventPrefixes.some(prefix => eventName.startsWith(prefix)) ||
                        eventName.includes('_action') ||
                        eventName.includes('_clicked') ||
@@ -297,7 +292,6 @@ app.get('/api/analytics/pueblos', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Intentar obtener de pueblo_view con customEvent:pueblo_nombre
     let pueblos = [];
     
     try {
@@ -320,7 +314,6 @@ app.get('/api/analytics/pueblos', async (req, res) => {
         users: extractMetric(row, 1),
       })) || [];
     } catch (e) {
-      // Fallback: buscar en screenName
       try {
         const [screenReport] = await runReport(['screenName'], ['screenPageViews', 'activeUsers'], { startDate, endDate }, 'screenPageViews', 50);
         
@@ -350,7 +343,6 @@ app.get('/api/analytics/categorias', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
-    // Intentar obtener category_clicked con customEvent:category_name
     let categorias = [];
     
     try {
@@ -374,7 +366,6 @@ app.get('/api/analytics/categorias', async (req, res) => {
         users: extractMetric(row, 1),
       })) || [];
     } catch (e) {
-      // Fallback: método anterior
       const [eventsReport] = await runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 50);
       
       const categoriasEvents = ['turismo_clicked', 'restaurante_clicked', 'comercio_clicked', 'hotel_clicked', 'category_clicked'];
@@ -434,14 +425,13 @@ app.get('/api/analytics/categorias-vistas', async (req, res) => {
   }
 });
 
-// ENTIDADES (lugares) - Dinámico con todos los parámetros
+// ENTIDADES (lugares)
 app.get('/api/analytics/entidades', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today', puebloId } = req.query;
     
     let entidades = [];
     
-    // Construir filtro base
     let filter = {
       filter: {
         fieldName: 'eventName',
@@ -449,7 +439,6 @@ app.get('/api/analytics/entidades', async (req, res) => {
       }
     };
     
-    // Si hay puebloId, agregar filtro adicional
     if (puebloId) {
       filter = {
         filter: {
@@ -480,7 +469,6 @@ app.get('/api/analytics/entidades', async (req, res) => {
         users: extractMetric(row, 1),
       })) || [];
     } catch (e) {
-      // Fallback: método anterior con eventos específicos
       const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 100);
       
       const entityEvents = eventsReport.rows
@@ -520,7 +508,6 @@ app.get('/api/analytics/entidades-detalles', async (req, res) => {
         'eventCount', 50
       );
       
-      // Filtrar solo los que tienen entity_name (vistas de detalle)
       detalles = report.rows
         ?.filter(row => extractValue(row, 0) && extractValue(row, 0) !== '(not set)')
         .map(row => ({
@@ -540,7 +527,7 @@ app.get('/api/analytics/entidades-detalles', async (req, res) => {
   }
 });
 
-// ACCIONES - Dinámico con customEvent:action
+// ACCIONES
 app.get('/api/analytics/acciones', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -548,7 +535,6 @@ app.get('/api/analytics/acciones', async (req, res) => {
     let acciones = [];
     
     try {
-      // Obtener acciones de entity_action
       const [report] = await runReportWithFilter(
         ['customEvent:action', 'customEvent:entity_name'],
         ['eventCount'],
@@ -568,7 +554,6 @@ app.get('/api/analytics/acciones', async (req, res) => {
         count: extractMetric(row, 0),
       })) || [];
     } catch (e) {
-      // Fallback: buscar eventos que contengan action
       const [eventsReport] = await runReport(['eventName'], ['eventCount'], { startDate, endDate }, 'eventCount', 50);
       
       acciones = eventsReport.rows
@@ -620,14 +605,13 @@ app.get('/api/analytics/acciones-resumen', async (req, res) => {
   }
 });
 
-// MAPAS - Abrir mapa
+// MAPAS
 app.get('/api/analytics/mapas', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
     
     let mapas = [];
     
-    // Mapas de pueblos
     try {
       const [puebloReport] = await runReportWithFilter(
         ['customEvent:pueblo_nombre'],
@@ -649,7 +633,6 @@ app.get('/api/analytics/mapas', async (req, res) => {
       })) || []));
     } catch (e) {}
     
-    // Mapas de lugares
     try {
       const [lugarReport] = await runReportWithFilter(
         ['customEvent:lugar_nombre'],
@@ -677,7 +660,7 @@ app.get('/api/analytics/mapas', async (req, res) => {
   }
 });
 
-// BÚSQUEDAS - Dinámico
+// BÚSQUEDAS
 app.get('/api/analytics/busquedas', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -748,7 +731,7 @@ app.get('/api/analytics/filtros', async (req, res) => {
   }
 });
 
-// SOS - Emergencias
+// SOS
 app.get('/api/analytics/sos', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -894,7 +877,6 @@ app.get('/api/analytics/compartir', async (req, res) => {
 
 // ========================================
 // ENDPOINT GENÉRICO DINÁMICO
-// Este endpoint permite consultar cualquier evento con cualquier parámetro
 // ========================================
 
 app.get('/api/analytics/custom', async (req, res) => {
@@ -902,9 +884,9 @@ app.get('/api/analytics/custom', async (req, res) => {
     const { 
       startDate = '30daysAgo', 
       endDate = 'today',
-      eventName,           // Nombre del evento a filtrar
-      dimensions,          // Dimensiones separadas por coma (ej: "customEvent:pueblo_nombre,customEvent:category_name")
-      metrics = 'eventCount,activeUsers',  // Métricas por defecto
+      eventName,
+      dimensions,
+      metrics = 'eventCount,activeUsers',
       limit = 30
     } = req.query;
     
@@ -935,11 +917,9 @@ app.get('/api/analytics/custom', async (req, res) => {
       parseInt(limit)
     );
     
-    // Convertir resultados a objeto dinámico
     const data = report.rows?.map(row => {
       const obj = {};
       dimensionsList.forEach((dim, idx) => {
-        // Extraer nombre limpio del parámetro
         const cleanName = dim.replace('customEvent:', '').replace('firebase:', '');
         obj[cleanName] = extractValue(row, idx);
       });
@@ -971,7 +951,6 @@ app.get('/api/analytics/dashboard', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today', puebloId } = req.query;
     
-    // Ejecutar todas las consultas en paralelo
     const [
       overviewResult,
       pueblosResult,
@@ -985,7 +964,6 @@ app.get('/api/analytics/dashboard', async (req, res) => {
     ] = await Promise.allSettled([
       runReport([], ['activeUsers', 'newUsers', 'sessions', 'screenPageViews', 'averageSessionDuration', 'bounceRate', 'engagementRate'], { startDate, endDate }).catch(() => null),
       
-      // Pueblos
       runReportWithFilter(
         ['customEvent:pueblo_nombre'],
         ['eventCount', 'activeUsers'],
@@ -994,7 +972,6 @@ app.get('/api/analytics/dashboard', async (req, res) => {
         'eventCount', 20
       ).catch(() => null),
       
-      // Categorías
       runReportWithFilter(
         ['customEvent:category_name', 'customEvent:pueblo_id'],
         ['eventCount', 'activeUsers'],
@@ -1003,7 +980,6 @@ app.get('/api/analytics/dashboard', async (req, res) => {
         'eventCount', 20
       ).catch(() => null),
       
-      // Entidades
       runReportWithFilter(
         ['customEvent:entity_name', 'customEvent:category_name', 'customEvent:pueblo_id'],
         ['eventCount', 'activeUsers'],
@@ -1012,7 +988,6 @@ app.get('/api/analytics/dashboard', async (req, res) => {
         'eventCount', 30
       ).catch(() => null),
       
-      // Acciones
       runReportWithFilter(
         ['customEvent:action'],
         ['eventCount'],
@@ -1021,7 +996,6 @@ app.get('/api/analytics/dashboard', async (req, res) => {
         'eventCount', 20
       ).catch(() => null),
       
-      // Mapas
       runReportWithFilter(
         ['customEvent:lugar_nombre'],
         ['eventCount'],
@@ -1030,17 +1004,13 @@ app.get('/api/analytics/dashboard', async (req, res) => {
         'eventCount', 20
       ).catch(() => null),
       
-      // Platforms
       runReport(['platform'], ['activeUsers', 'sessions'], { startDate, endDate }, 'activeUsers', 5).catch(() => null),
       
-      // Countries
       runReport(['country'], ['activeUsers'], { startDate, endDate }, 'activeUsers', 10).catch(() => null),
       
-      // Top events
       runReport(['eventName'], ['eventCount', 'activeUsers'], { startDate, endDate }, 'eventCount', 30).catch(() => null),
     ]);
     
-    // Parse overview
     const overviewRow = overviewResult?.value?.[0]?.rows?.[0];
     const overview = {
       activeUsers: parseInt(overviewRow?.metricValues?.[0]?.value) || 0,
@@ -1052,14 +1022,12 @@ app.get('/api/analytics/dashboard', async (req, res) => {
       engagementRate: parseFloat(overviewRow?.metricValues?.[6]?.value) || 0,
     };
     
-    // Parse pueblos
     const pueblos = pueblosResult?.value?.[0]?.rows?.map(row => ({
       pueblo: extractValue(row, 0),
       views: extractMetric(row, 0),
       users: extractMetric(row, 1),
     })) || [];
     
-    // Parse categorias
     const categorias = categoriasResult?.value?.[0]?.rows?.map(row => ({
       categoria: extractValue(row, 0),
       pueblo: extractValue(row, 1),
@@ -1067,7 +1035,6 @@ app.get('/api/analytics/dashboard', async (req, res) => {
       users: extractMetric(row, 1),
     })) || [];
     
-    // Parse entidades
     let entidades = entidadesResult?.value?.[0]?.rows?.map(row => ({
       entidad: extractValue(row, 0),
       categoria: extractValue(row, 1),
@@ -1076,37 +1043,31 @@ app.get('/api/analytics/dashboard', async (req, res) => {
       users: extractMetric(row, 1),
     })) || [];
     
-    // Filtrar por pueblo si se especifica
     if (puebloId) {
       entidades = entidades.filter(e => e.pueblo === puebloId);
     }
     
-    // Parse acciones
     const acciones = accionesResult?.value?.[0]?.rows?.map(row => ({
       action: extractValue(row, 0),
       count: extractMetric(row, 0),
     })) || [];
     
-    // Parse mapas
     const mapas = mapasResult?.value?.[0]?.rows?.map(row => ({
       lugar: extractValue(row, 0),
       count: extractMetric(row, 0),
     })) || [];
     
-    // Parse platforms
     const platforms = platformsResult?.value?.[0]?.rows?.map(row => ({
       platform: extractValue(row, 0),
       users: extractMetric(row, 0),
       sessions: extractMetric(row, 1),
     })) || [];
     
-    // Parse countries
     const countries = countriesResult?.value?.[0]?.rows?.map(row => ({
       country: extractValue(row, 0),
       users: extractMetric(row, 0),
     })) || [];
     
-    // Parse top events
     const topEvents = topEventsResult?.value?.[0]?.rows?.map(row => ({
       event: extractValue(row, 0),
       count: extractMetric(row, 0),
@@ -1134,7 +1095,7 @@ app.get('/api/analytics/dashboard', async (req, res) => {
 });
 
 // ========================================
-// PARÁMETROS DISPONIBLES - Endpoint de ayuda
+// PARÁMETROS DISPONIBLES
 // ========================================
 
 app.get('/api/analytics/parametros-disponibles', (req, res) => {
@@ -1225,13 +1186,12 @@ app.post('/api/mongodb/event', async (req, res) => {
       return res.json({ success: false, error: 'event_name es requerido' });
     }
     
-    // Guardar en la colección de eventos
     const eventDocument = {
       event_name,
       timestamp: timestamp || Date.now(),
       data: data || {},
       server_time: new Date(),
-      date: new Date().toISOString().split('T')[0] // Para agrupar por día
+      date: new Date().toISOString().split('T')[0]
     };
     
     await mongoDb.collection('events').insertOne(eventDocument);
@@ -1248,7 +1208,10 @@ app.post('/api/mongodb/event', async (req, res) => {
   }
 });
 
-// Dashboard MongoDB - Estadísticas en tiempo real
+// ========================================
+// DASHBOARD MONGODB - OPTIMIZADO (PROMISE.ALL)
+// ========================================
+
 app.get('/api/mongodb/dashboard', async (req, res) => {
   try {
     if (!mongoDb) {
@@ -1261,119 +1224,102 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
     const { days = 7 } = req.query;
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
-    
-    // Total de eventos
-    const totalEvents = await mongoDb.collection('events').countDocuments({
-      server_time: { $gte: startDate }
-    });
-    
-    // Eventos por tipo
-    const eventsByType = await mongoDb.collection('events').aggregate([
-      { $match: { server_time: { $gte: startDate } } },
-      { $group: { _id: '$event_name', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 20 }
-    ]).toArray();
-    
-    // Pueblos más vistos - busca en town_name, pueblo_nombre, etc.
-    let topPueblos = await mongoDb.collection('events').aggregate([
-      { 
-        $match: { 
-          server_time: { $gte: startDate },
-          'data.town_name': { $exists: true, $ne: null }
-        } 
-      },
-      { $group: { _id: '$data.town_name', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 15 }
-    ]).toArray();
-    
-    // Filtrar valores vacíos
-    topPueblos = topPueblos.filter(p => p._id && p._id.trim() !== '');
-    
-    // Si no encontramos con town_name, buscar con pueblo_nombre
-    if (topPueblos.length === 0) {
-      topPueblos = await mongoDb.collection('events').aggregate([
-        { 
-          $match: { 
-            server_time: { $gte: startDate },
-            $or: [
-              { event_name: 'pueblo_view' },
-              { event_name: 'abrir_mapa_pueblo' },
-              { 'data.pueblo_nombre': { $exists: true, $ne: null } },
-              { 'data.pueblo_id': { $exists: true, $ne: null } }
-            ]
-          } 
-        },
-        { $group: { 
-          _id: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }, 
-          count: { $sum: 1 } 
-        }},
+
+    // Helper para manejar la lógica de pueblos con fallback
+    const getTopPueblos = async () => {
+      let result = await mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate }, 'data.town_name': { $exists: true, $ne: null } } },
+        { $group: { _id: '$data.town_name', count: { $sum: 1 } } },
         { $sort: { count: -1 } },
         { $limit: 15 }
       ]).toArray();
-      topPueblos = topPueblos.filter(p => p._id && p._id.trim() !== '');
-    }
-    
-    // Categorías más clickeadas
-    const topCategorias = await mongoDb.collection('events').aggregate([
-      { 
-        $match: { 
-          server_time: { $gte: startDate },
-          event_name: { $in: ['category_click', 'category_view'] }
-        } 
-      },
-      { $group: { _id: '$data.category_name', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 10 }
-    ]).toArray();
-    
-    // Entidades más clickeadas
-    const topEntidades = await mongoDb.collection('events').aggregate([
-      { 
-        $match: { 
-          server_time: { $gte: startDate },
-          event_name: 'entity_clicked'
-        } 
-      },
-      { $group: { 
-        _id: { nombre: '$data.entity_name', categoria: '$data.category_name' }, 
-        count: { $sum: 1 } 
-      }},
-      { $sort: { count: -1 } },
-      { $limit: 15 }
-    ]).toArray();
-    
-    // Acciones realizadas
-    const acciones = await mongoDb.collection('events').aggregate([
-      { 
-        $match: { 
-          server_time: { $gte: startDate },
-          event_name: 'entity_action'
-        } 
-      },
-      { $group: { _id: '$data.action', count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
-    
-    // Eventos por día
-    const eventsByDay = await mongoDb.collection('events').aggregate([
-      { $match: { server_time: { $gte: startDate } } },
-      { $group: { 
-        _id: '$date', 
-        count: { $sum: 1 },
-        unique_users: { $addToSet: '$data.device_model' }
-      }},
-      { $project: { _id: 0, date: '$_id', count: 1, devices: { $size: '$unique_users' } } },
-      { $sort: { date: 1 } }
-    ]).toArray();
+      
+      result = result.filter(p => p._id && p._id.trim() !== '');
+      
+      if (result.length === 0) {
+        result = await mongoDb.collection('events').aggregate([
+          { 
+            $match: { 
+              server_time: { $gte: startDate },
+              $or: [
+                { event_name: 'pueblo_view' },
+                { event_name: 'abrir_mapa_pueblo' },
+                { 'data.pueblo_nombre': { $exists: true, $ne: null } },
+                { 'data.pueblo_id': { $exists: true, $ne: null } }
+              ]
+            } 
+          },
+          { $group: { _id: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }, count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+          { $limit: 15 }
+        ]).toArray();
+        result = result.filter(p => p._id && p._id.trim() !== '');
+      }
+      return result;
+    };
+
+    // EJECUTAR TODAS LAS CONSULTAS EN PARALELO
+    const [
+      totalEvents,
+      eventsByType,
+      topPueblos,
+      topCategorias,
+      topEntidades,
+      acciones,
+      eventsByDay
+    ] = await Promise.all([
+      // 1. Total Eventos
+      mongoDb.collection('events').countDocuments({ server_time: { $gte: startDate } }),
+      
+      // 2. Eventos por Tipo
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate } } },
+        { $group: { _id: '$event_name', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 20 }
+      ]).toArray(),
+      
+      // 3. Top Pueblos (con lógica fallback)
+      getTopPueblos(),
+      
+      // 4. Top Categorías
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate }, event_name: { $in: ['category_click', 'category_view'] } } },
+        { $group: { _id: '$data.category_name', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 }
+      ]).toArray(),
+      
+      // 5. Top Entidades
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate }, event_name: 'entity_clicked' } },
+        { $group: { _id: { nombre: '$data.entity_name', categoria: '$data.category_name' }, count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 15 }
+      ]).toArray(),
+      
+      // 6. Acciones
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate }, event_name: 'entity_action' } },
+        { $group: { _id: '$data.action', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]).toArray(),
+      
+      // 7. Eventos por Día
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate } } },
+        { $group: { _id: '$date', count: { $sum: 1 }, unique_users: { $addToSet: '$data.device_model' } } },
+        { $project: { _id: 0, date: '$_id', count: 1, devices: { $size: '$unique_users' } } },
+        { $sort: { date: 1 } }
+      ]).toArray()
+    ]);
     
     res.json({
       success: true,
       data: {
         totalEvents,
         eventsByType: eventsByType.map(e => ({ event: e._id, count: e.count })),
-        topPueblos: topPueblos.filter(p => p._id).map(p => ({ pueblo: p._id, count: p.count })),
+        topPueblos: topPueblos.map(p => ({ pueblo: p._id, count: p.count })),
         topCategorias: topCategorias.filter(c => c._id).map(c => ({ categoria: c._id, count: c.count })),
         topEntidades: topEntidades.filter(e => e._id?.nombre).map(e => ({ 
           entidad: e._id.nombre, 
@@ -1422,10 +1368,8 @@ app.get('/api/mongodb/campos-disponibles', async (req, res) => {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
     
-    // Obtener eventos únicos
     const eventTypes = await mongoDb.collection('events').distinct('event_name');
     
-    // Para cada tipo de evento, obtener campos disponibles en data
     const camposPorEvento = {};
     
     for (const eventName of eventTypes) {
@@ -1453,7 +1397,7 @@ app.get('/api/mongodb/campos-disponibles', async (req, res) => {
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v2.1 (Firebase + MongoDB) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v2.2 (Optimized) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
