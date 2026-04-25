@@ -140,7 +140,7 @@
 
         .date-picker-container label { color: var(--text-secondary); font-size: 0.85rem; }
 
-        .date-picker-container input {
+        .date-picker-container input, .date-picker-container select {
             background: var(--card-bg);
             border: 1px solid var(--card-border);
             color: var(--text-primary);
@@ -149,7 +149,7 @@
             font-size: 0.85rem;
         }
 
-        .date-picker-container input:focus { outline: none; border-color: var(--primary); }
+        .date-picker-container input:focus, .date-picker-container select:focus { outline: none; border-color: var(--primary); }
 
         .apply-btn {
             padding: 0.5rem 1rem;
@@ -526,6 +526,16 @@
 
         <!-- TIEMPO REAL TAB -->
         <div id="realtime" class="tab-content active">
+            
+            <!-- NUEVO: FILTRO POR PUEBLO -->
+            <div class="date-picker-container" style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem;">
+                <label style="color: var(--text-secondary); font-weight: 600;">🌍 Filtrar por Pueblo:</label>
+                <select id="puebloFilter" onchange="applyFilters()" style="min-width: 200px;">
+                    <option value="">Todos los pueblos</option>
+                </select>
+                <button class="apply-btn" style="background: var(--danger);" onclick="clearFilters()">Limpiar Filtro</button>
+            </div>
+
             <div class="kpi-grid" id="realtimeKpis">
                 <div class="kpi-card purple"><div class="loading"><div class="spinner"></div> Cargando...</div></div>
             </div>
@@ -703,7 +713,7 @@
         </div>
 
         <footer class="footer">
-            <p>Turisteando Analytics v2.6 • MongoDB Atlas + Firebase Analytics</p>
+            <p>Turisteando Analytics v2.7 • MongoDB Atlas + Firebase Analytics</p>
             <p>Última actualización: <span id="lastUpdate">-</span></p>
         </footer>
     </main>
@@ -717,6 +727,9 @@
             historicalUsers: null,
             historicalPlatform: null
         };
+
+        // Variable global para almacenar datos y filtrar
+        let allRealtimeData = null;
 
         const today = new Date().toISOString().split('T')[0];
         const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -763,6 +776,14 @@
                 
                 if (result.success) {
                     document.getElementById('connectionStatus').textContent = 'MongoDB Conectado';
+                    
+                    // Guardar datos globalmente
+                    allRealtimeData = result.data;
+                    
+                    // Poblar filtro
+                    populatePuebloFilter(result.data.topPueblos);
+                    
+                    // Renderizar todo
                     renderRealtimeKpis(result.data);
                     renderRealtimePueblos(result.data.topPueblos);
                     renderRealtimeCategorias(result.data.topCategorias);
@@ -779,6 +800,61 @@
                 console.error('Error MongoDB:', error);
                 document.getElementById('connectionStatus').textContent = 'Error MongoDB';
             }
+        }
+
+        function populatePuebloFilter(pueblos) {
+            const select = document.getElementById('puebloFilter');
+            const currentValue = select.value;
+            
+            // Limpiar opciones existentes excepto la primera
+            select.innerHTML = '<option value="">Todos los pueblos</option>';
+            
+            if (pueblos && pueblos.length > 0) {
+                pueblos.forEach(p => {
+                    const option = document.createElement('option');
+                    option.value = p.pueblo;
+                    option.textContent = p.pueblo;
+                    select.appendChild(option);
+                });
+            }
+            
+            // Restaurar selección si aún existe
+            if (currentValue && Array.from(select.options).some(opt => opt.value === currentValue)) {
+                select.value = currentValue;
+            }
+        }
+
+        function applyFilters() {
+            if (!allRealtimeData) return;
+            
+            const selectedPueblo = document.getElementById('puebloFilter').value;
+            
+            // Si no hay filtro seleccionado, mostrar todo
+            if (!selectedPueblo) {
+                renderRealtimeCategorias(allRealtimeData.topCategorias);
+                renderRealtimeEntidades(allRealtimeData.topEntidades);
+                // Las acciones requieren datos granulares del backend, si no existen no se filtran
+                renderRealtimeAcciones(allRealtimeData.acciones); 
+                return;
+            }
+
+            // Filtrar Categorías (asumiendo que el backend envía 'pueblo' en topCategorias)
+            // Si el backend no envía 'pueblo', esto mostrará array vacío.
+            const filteredCategorias = allRealtimeData.topCategorias.filter(c => c.pueblo === selectedPueblo);
+            renderRealtimeCategorias(filteredCategorias);
+
+            // Filtrar Entidades
+            const filteredEntidades = allRealtimeData.topEntidades.filter(e => e.pueblo === selectedPueblo);
+            renderRealtimeEntidades(filteredEntidades);
+            
+            // Filtrar Acciones (Mismo caso, depende de la granularidad del backend)
+            const filteredAcciones = allRealtimeData.acciones.filter(a => a.pueblo === selectedPueblo);
+            renderRealtimeAcciones(filteredAcciones);
+        }
+
+        function clearFilters() {
+            document.getElementById('puebloFilter').value = "";
+            applyFilters(); // Esto restaurará la vista completa
         }
 
         function renderRealtimeKpis(data) {
@@ -835,7 +911,7 @@
             const container = document.getElementById('rtCategoriasBody');
             
             if (!data || data.length === 0) {
-                container.innerHTML = '<div class="empty-state"><span>📁</span><p>Sin categorías aún</p></div>';
+                container.innerHTML = '<div class="empty-state"><span>📁</span><p>Sin datos para este filtro</p></div>';
                 return;
             }
 
@@ -843,12 +919,13 @@
             
             container.innerHTML = `
                 <table class="data-table">
-                    <thead><tr><th>#</th><th>Categoría</th><th>Clicks</th></tr></thead>
+                    <thead><tr><th>#</th><th>Categoría</th><th>Pueblo</th><th>Clicks</th></tr></thead>
                     <tbody>
                         ${data.slice(0, 8).map((item, idx) => `
                             <tr>
                                 <td><span class="rank ${idx < 3 ? ['gold', 'silver', 'bronze'][idx] : ''}">${idx + 1}</span></td>
                                 <td>${item.categoria || 'Sin nombre'}</td>
+                                <td style="color: var(--text-muted); font-size: 0.8rem;">${item.pueblo || '-'}</td>
                                 <td>
                                     <span class="count-badge">${item.count}</span>
                                     <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
@@ -865,7 +942,7 @@
             const container = document.getElementById('rtEntidadesBody');
             
             if (!data || data.length === 0) {
-                container.innerHTML = '<div class="empty-state"><span>⭐</span><p>Sin lugares aún</p></div>';
+                container.innerHTML = '<div class="empty-state"><span>⭐</span><p>Sin datos para este filtro</p></div>';
                 return;
             }
 
@@ -873,7 +950,7 @@
             
             container.innerHTML = `
                 <table class="data-table">
-                    <thead><tr><th>#</th><th>Lugar</th><th>Clicks</th></tr></thead>
+                    <thead><tr><th>#</th><th>Lugar</th><th>Pueblo</th><th>Clicks</th></tr></thead>
                     <tbody>
                         ${data.slice(0, 8).map((item, idx) => `
                             <tr>
@@ -882,6 +959,7 @@
                                     <div class="entity-name">${item.entidad || 'Sin nombre'}</div>
                                     <div class="entity-meta">${item.categoria || ''}</div>
                                 </td>
+                                <td style="color: var(--text-muted); font-size: 0.8rem;">${item.pueblo || '-'}</td>
                                 <td>
                                     <span class="count-badge">${item.count}</span>
                                     <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
@@ -898,23 +976,29 @@
             const container = document.getElementById('rtAccionesBody');
             
             if (!data || data.length === 0) {
-                container.innerHTML = '<div class="empty-state"><span>⚡</span><p>Sin acciones aún</p></div>';
+                container.innerHTML = '<div class="empty-state"><span>⚡</span><p>Sin datos para este filtro</p></div>';
                 return;
             }
 
             const actionIcons = { 'llamar': '📞', 'whatsapp': '💬', 'mapa': '🗺️', 'web': '🌐', 'share': '📤' };
 
-            container.innerHTML = data.slice(0, 6).map(item => `
-                <div class="action-item">
-                    <div class="action-icon ${item.action?.includes('llamar') ? 'llamar' : item.action?.includes('whatsapp') ? 'whatsapp' : item.action?.includes('mapa') ? 'mapa' : item.action?.includes('web') ? 'web' : 'default'}">
-                        ${actionIcons[item.action] || '📌'}
-                    </div>
-                    <div class="action-info">
-                        <div class="action-name">${item.action || 'Sin acción'}</div>
-                    </div>
-                    <div class="action-count">${item.count || 0}</div>
-                </div>
-            `).join('');
+            container.innerHTML = `
+                <table class="data-table">
+                    <thead><tr><th>Acción</th><th>Entidad</th><th>Pueblo</th><th>Total</th></tr></thead>
+                    <tbody>
+                        ${data.slice(0, 6).map(item => `
+                            <tr>
+                                <td style="text-transform: capitalize;">
+                                    ${actionIcons[item.action] || '📌'} ${item.action || 'Otro'}
+                                </td>
+                                <td>${item.entity || item.entidad || '-'}</td>
+                                <td style="color: var(--text-muted); font-size: 0.8rem;">${item.pueblo || '-'}</td>
+                                <td><span class="count-badge blue">${item.count || 0}</span></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
         }
 
         function renderRealtimeEventsChart(data) {
