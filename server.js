@@ -1211,6 +1211,9 @@ app.post('/api/mongodb/event', async (req, res) => {
 // ========================================
 // DASHBOARD MONGODB - OPTIMIZADO (PROMISE.ALL)
 // ========================================
+// ========================================
+// DASHBOARD MONGODB - CORREGIDO (AGRUPA POR PUEBLO)
+// ========================================
 
 app.get('/api/mongodb/dashboard', async (req, res) => {
   try {
@@ -1225,38 +1228,9 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
 
-    // Helper para manejar la lógica de pueblos con fallback
-    const getTopPueblos = async () => {
-      let result = await mongoDb.collection('events').aggregate([
-        { $match: { server_time: { $gte: startDate }, 'data.town_name': { $exists: true, $ne: null } } },
-        { $group: { _id: '$data.town_name', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 15 }
-      ]).toArray();
-      
-      result = result.filter(p => p._id && p._id.trim() !== '');
-      
-      if (result.length === 0) {
-        result = await mongoDb.collection('events').aggregate([
-          { 
-            $match: { 
-              server_time: { $gte: startDate },
-              $or: [
-                { event_name: 'pueblo_view' },
-                { event_name: 'abrir_mapa_pueblo' },
-                { 'data.pueblo_nombre': { $exists: true, $ne: null } },
-                { 'data.pueblo_id': { $exists: true, $ne: null } }
-              ]
-            } 
-          },
-          { $group: { _id: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }, count: { $sum: 1 } } },
-          { $sort: { count: -1 } },
-          { $limit: 15 }
-        ]).toArray();
-        result = result.filter(p => p._id && p._id.trim() !== '');
-      }
-      return result;
-    };
+    // Helper para obtener el nombre del pueblo de forma segura
+    // Busca pueblo_nombre, si no existe busca pueblo_id
+    const getPuebloField = { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] };
 
     // EJECUTAR TODAS LAS CONSULTAS EN PARALELO
     const [
@@ -1279,30 +1253,57 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         { $limit: 20 }
       ]).toArray(),
       
-      // 3. Top Pueblos (con lógica fallback)
-      getTopPueblos(),
-      
-      // 4. Top Categorías
+      // 3. Top Pueblos (Agrupa por pueblo_nombre o pueblo_id)
       mongoDb.collection('events').aggregate([
-        { $match: { server_time: { $gte: startDate }, event_name: { $in: ['category_click', 'category_view'] } } },
-        { $group: { _id: '$data.category_name', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 }
-      ]).toArray(),
-      
-      // 5. Top Entidades
-      mongoDb.collection('events').aggregate([
-        { $match: { server_time: { $gte: startDate }, event_name: 'entity_clicked' } },
-        { $group: { _id: { nombre: '$data.entity_name', categoria: '$data.category_name' }, count: { $sum: 1 } } },
+        { $match: { server_time: { $gte: startDate } } },
+        { $group: { _id: getPuebloField, count: { $sum: 1 } } },
+        { $match: { _id: { $ne: null, $ne: "" } } }, // Filtra nulos
         { $sort: { count: -1 } },
         { $limit: 15 }
       ]).toArray(),
       
-      // 6. Acciones
+      // 4. Top Categorías (CORREGIDO: Agrupa por Categoría Y Pueblo)
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate }, event_name: { $in: ['category_click', 'category_view'] } } },
+        { $group: { 
+            _id: { 
+              categoria: '$data.category_name', 
+              pueblo: getPuebloField 
+            }, 
+            count: { $sum: 1 } 
+        }},
+        { $sort: { count: -1 } },
+        { $limit: 20 }
+      ]).toArray(),
+      
+      // 5. Top Entidades (CORREGIDO: Agrupa por Entidad, Categoría Y Pueblo)
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate }, event_name: 'entity_clicked' } },
+        { $group: { 
+            _id: { 
+              nombre: '$data.entity_name', 
+              categoria: '$data.category_name', 
+              pueblo: getPuebloField 
+            }, 
+            count: { $sum: 1 } 
+        }},
+        { $sort: { count: -1 } },
+        { $limit: 20 }
+      ]).toArray(),
+      
+      // 6. Acciones (CORREGIDO: Agrupa por Acción, Entidad Y Pueblo)
       mongoDb.collection('events').aggregate([
         { $match: { server_time: { $gte: startDate }, event_name: 'entity_action' } },
-        { $group: { _id: '$data.action', count: { $sum: 1 } } },
-        { $sort: { count: -1 } }
+        { $group: { 
+            _id: { 
+              action: '$data.action', 
+              entity: '$data.entity_name', 
+              pueblo: getPuebloField 
+            }, 
+            count: { $sum: 1 } 
+        }},
+        { $sort: { count: -1 } },
+        { $limit: 20 }
       ]).toArray(),
       
       // 7. Eventos por Día
@@ -1320,13 +1321,28 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         totalEvents,
         eventsByType: eventsByType.map(e => ({ event: e._id, count: e.count })),
         topPueblos: topPueblos.map(p => ({ pueblo: p._id, count: p.count })),
-        topCategorias: topCategorias.filter(c => c._id).map(c => ({ categoria: c._id, count: c.count })),
-        topEntidades: topEntidades.filter(e => e._id?.nombre).map(e => ({ 
+        
+        // Mapeos actualizados para incluir 'pueblo'
+        topCategorias: topCategorias.filter(c => c._id.categoria).map(c => ({ 
+          categoria: c._id.categoria, 
+          pueblo: c._id.pueblo || 'Sin pueblo',
+          count: c.count 
+        })),
+        
+        topEntidades: topEntidades.filter(e => e._id.nombre).map(e => ({ 
           entidad: e._id.nombre, 
           categoria: e._id.categoria, 
+          pueblo: e._id.pueblo || 'Sin pueblo',
           count: e.count 
         })),
-        acciones: acciones.filter(a => a._id).map(a => ({ action: a._id, count: a.count })),
+        
+        acciones: acciones.filter(a => a._id.action).map(a => ({ 
+          action: a._id.action, 
+          entity: a._id.entity,
+          pueblo: a._id.pueblo || 'Sin pueblo',
+          count: a.count 
+        })),
+        
         eventsByDay
       }
     });
@@ -1336,62 +1352,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
     res.json({ success: false, error: error.message });
   }
 });
-
-// Endpoint para ver eventos recientes
-app.get('/api/mongodb/events/recent', async (req, res) => {
-  try {
-    if (!mongoDb) {
-      return res.json({ success: false, error: 'MongoDB no está conectado' });
-    }
-    
-    const { limit = 50, event_name } = req.query;
-    
-    const filter = event_name ? { event_name } : {};
-    
-    const events = await mongoDb.collection('events')
-      .find(filter)
-      .sort({ server_time: -1 })
-      .limit(parseInt(limit))
-      .toArray();
-    
-    res.json({ success: true, count: events.length, data: events });
-    
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
-// Descubrir campos disponibles (dinámico)
-app.get('/api/mongodb/campos-disponibles', async (req, res) => {
-  try {
-    if (!mongoDb) {
-      return res.json({ success: false, error: 'MongoDB no está conectado' });
-    }
-    
-    const eventTypes = await mongoDb.collection('events').distinct('event_name');
-    
-    const camposPorEvento = {};
-    
-    for (const eventName of eventTypes) {
-      const sample = await mongoDb.collection('events').findOne({ event_name: eventName });
-      if (sample && sample.data) {
-        camposPorEvento[eventName] = Object.keys(sample.data);
-      }
-    }
-    
-    res.json({
-      success: true,
-      data: {
-        eventos_disponibles: eventTypes,
-        campos_por_evento: camposPorEvento
-      }
-    });
-    
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
 // ========================================
 // INICIAR SERVIDOR
 // ========================================
