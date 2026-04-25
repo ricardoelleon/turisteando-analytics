@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Turisteando Analytics - MongoDB Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #6366f1;
+            --secondary: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --dark: #1e293b;
+            --darker: #0f172a;
+            --card-bg: #1e293b;
+            --card-border: #334155;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+            min-height: 100vh;
+            color: var(--text-primary);
+        }
+
+        .header {
+            background: rgba(15, 23, 42, 0.95);
+            border-bottom: 1px solid var(--card-border);
+            padding: 1rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+
+        .logo-text h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #fff, #a5b4fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-text span {
+            font-size: 0.75rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0.5rem 1rem;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 8px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--secondary);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .kpi-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .kpi-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+        }
+
+        .kpi-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            margin-bottom: 0.75rem;
+            background: rgba(99, 102, 241, 0.2);
+        }
+
+        .kpi-value {
+            font-size: 2rem;
+            font-weight: 800;
+        }
+
+        .kpi-label {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 900px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .card.full-width {
+            grid-column: 1 / -1;
+        }
+
+        .card-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-body {
+            padding: 1.5rem;
+        }
+
+        .chart-container {
+            height: 250px;
+            position: relative;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .data-table th {
+            text-align: left;
+            padding: 0.75rem;
+            background: rgba(0, 0, 0, 0.2);
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        .data-table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .rank {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, var(--primary), #4f46e5);
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.8rem;
+        }
+
+        .rank.gold { background: linear-gradient(135deg, #fbbf24, #d97706); }
+        .rank.silver { background: linear-gradient(135deg, #9ca3af, #6b7280); }
+        .rank.bronze { background: linear-gradient(135deg, #d97706, #92400e); }
+
+        .count-badge {
+            padding: 0.25rem 0.75rem;
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--secondary);
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 0.25rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            border-radius: 3px;
+        }
+
+        .event-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .event-pill {
+            padding: 0.5rem 1rem;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .event-pill .count {
+            background: var(--primary);
+            color: white;
+            padding: 0.1rem 0.5rem;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 0.75rem;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+        }
+
+        .empty-state span {
+            font-size: 2.5rem;
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        .error-box {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #f87171;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+        }
+
+        .spinner {
+            width: 30px;
+            height: 30px;
+            border: 3px solid var(--card-border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 0.75rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: #64748b;
+            font-size: 0.85rem;
+            border-top: 1px solid var(--card-border);
+            margin-top: 2rem;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">📊</div>
+                <div class="logo-text">
+                    <h1>Turisteando Analytics</h1>
+                    <span>MongoDB - Tiempo Real</span>
+                </div>
+            </div>
+            <div class="status-indicator">
+                <div class="status-dot"></div>
+                <span id="connectionStatus">Conectando...</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <div id="errorContainer"></div>
+        
+        <div class="kpi-grid" id="kpiGrid">
+            <div class="kpi-card"><div class="loading"><div class="spinner"></div> Cargando...</div></div>
+            <div class="kpi-card"><div class="loading"><div class="spinner"></div> Cargando...</div></div>
+            <div class="kpi-card"><div class="loading"><div class="spinner"></div> Cargando...</div></div>
+            <div class="kpi-card"><div class="loading"><div class="spinner"></div> Cargando...</div></div>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-title">📈 Eventos por Día</div>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="eventsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">📁 Categorías Populares</div>
+                </div>
+                <div class="card-body" id="categoriasBody">
+                    <div class="loading"><div class="spinner"></div> Cargando...</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">⭐ Lugares Más Consultados</div>
+                </div>
+                <div class="card-body" id="entidadesBody">
+                    <div class="loading"><div class="spinner"></div> Cargando...</div>
+                </div>
+            </div>
+
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-title">📋 Todos los Eventos</div>
+                </div>
+                <div class="card-body" id="eventTypesBody">
+                    <div class="loading"><div class="spinner"></div> Cargando...</div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="footer">
+            <p>Turisteando Analytics v2.1 • MongoDB Atlas</p>
+            <p>Última actualización: <span id="lastUpdate">-</span></p>
+        </footer>
+    </main>
+
+    <script>
+        // URL FIJA DEL SERVIDOR EN RENDER
+        const API_BASE = 'https://turisteando-analytics.onrender.com';
+        let eventsChart = null;
+
+        console.log('🚀 Dashboard iniciando...');
+        console.log('📍 API Base:', API_BASE);
+
+        async function loadDashboard() {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.innerHTML = '';
+            
+            try {
+                const url = `${API_BASE}/api/mongodb/dashboard?days=7`;
+                console.log('📡 Fetching:', url);
+                
+                const response = await fetch(url);
+                console.log('📥 Response status:', response.status);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                console.log('📊 Data received:', result);
+                
+                if (result.success) {
+                    document.getElementById('connectionStatus').textContent = 'Conectado';
+                    renderKPIs(result.data);
+                    renderEventsChart(result.data.eventsByDay);
+                    renderCategorias(result.data.topCategorias);
+                    renderEntidades(result.data.topEntidades);
+                    renderEventTypes(result.data.eventsByType);
+                    updateTimestamp();
+                } else {
+                    throw new Error(result.error || 'Error desconocido');
+                }
+                
+            } catch (error) {
+                console.error('❌ Error:', error);
+                document.getElementById('connectionStatus').textContent = 'Error';
+                errorContainer.innerHTML = `
+                    <div class="error-box">
+                        <strong>❌ Error al cargar datos:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function renderKPIs(data) {
+            const totalAcciones = data.acciones ? data.acciones.reduce((sum, a) => sum + a.count, 0) : 0;
+            
+            const kpis = [
+                { icon: '📊', label: 'Total Eventos', value: data.totalEvents || 0 },
+                { icon: '📁', label: 'Categorías', value: data.topCategorias ? data.topCategorias.length : 0 },
+                { icon: '⭐', label: 'Lugares', value: data.topEntidades ? data.topEntidades.length : 0 },
+                { icon: '⚡', label: 'Acciones', value: totalAcciones }
+            ];
+
+            document.getElementById('kpiGrid').innerHTML = kpis.map(kpi => `
+                <div class="kpi-card">
+                    <div class="kpi-icon">${kpi.icon}</div>
+                    <div class="kpi-value">${kpi.value.toLocaleString()}</div>
+                    <div class="kpi-label">${kpi.label}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderEventsChart(data) {
+            const ctx = document.getElementById('eventsChart').getContext('2d');
+            
+            if (eventsChart) {
+                eventsChart.destroy();
+            }
+
+            if (!data || data.length === 0) {
+                document.getElementById('eventsChart').parentElement.innerHTML = '<div class="empty-state"><span>📈</span><p>Sin datos para mostrar</p></div>';
+                return;
+            }
+
+            const labels = data.map(d => {
+                const date = new Date(d.date);
+                return date.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric' });
+            });
+
+            eventsChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Eventos',
+                        data: data.map(d => d.count),
+                        backgroundColor: 'rgba(99, 102, 241, 0.7)',
+                        borderColor: '#6366f1',
+                        borderWidth: 2,
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#94a3b8' }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#94a3b8' },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderCategorias(data) {
+            const container = document.getElementById('categoriasBody');
+            
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>📁</span><p>Sin categorías aún</p></div>';
+                return;
+            }
+
+            const maxCount = Math.max(...data.map(d => d.count));
+            
+            container.innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr><th>#</th><th>Categoría</th><th>Clicks</th></tr>
+                    </thead>
+                    <tbody>
+                        ${data.slice(0, 10).map((item, idx) => `
+                            <tr>
+                                <td><span class="rank ${idx < 3 ? ['gold', 'silver', 'bronze'][idx] : ''}">${idx + 1}</span></td>
+                                <td>${item.categoria || 'Sin nombre'}</td>
+                                <td>
+                                    <span class="count-badge">${item.count}</span>
+                                    <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderEntidades(data) {
+            const container = document.getElementById('entidadesBody');
+            
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>⭐</span><p>Sin lugares aún</p></div>';
+                return;
+            }
+
+            const maxCount = Math.max(...data.map(d => d.count));
+            
+            container.innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr><th>#</th><th>Lugar</th><th>Clicks</th></tr>
+                    </thead>
+                    <tbody>
+                        ${data.slice(0, 10).map((item, idx) => `
+                            <tr>
+                                <td><span class="rank ${idx < 3 ? ['gold', 'silver', 'bronze'][idx] : ''}">${idx + 1}</span></td>
+                                <td>
+                                    ${item.entidad || 'Sin nombre'}
+                                    <div style="font-size:0.75rem;color:#64748b;">${item.categoria || ''}</div>
+                                </td>
+                                <td>
+                                    <span class="count-badge">${item.count}</span>
+                                    <div class="progress-bar"><div class="progress-fill" style="width: ${(item.count / maxCount) * 100}%"></div></div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderEventTypes(data) {
+            const container = document.getElementById('eventTypesBody');
+            
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>📋</span><p>Sin eventos aún</p></div>';
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="event-pills">
+                    ${data.map(item => `
+                        <div class="event-pill">
+                            ${item.event}
+                            <span class="count">${item.count}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function updateTimestamp() {
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString('es-ES');
+        }
+
+        // Iniciar
+        loadDashboard();
+        
+        // Auto-refresh cada 30 segundos
+        setInterval(loadDashboard, 30000);
+    </script>
+</body>
+</html>
