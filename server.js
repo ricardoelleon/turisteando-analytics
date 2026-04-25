@@ -1214,6 +1214,9 @@ app.post('/api/mongodb/event', async (req, res) => {
 // ========================================
 // DASHBOARD MONGODB - CORREGIDO (AGRUPA POR PUEBLO)
 // ========================================
+// ========================================
+// DASHBOARD MONGODB - CORREGIDO (AGRUPA POR PUEBLO)
+// ========================================
 
 app.get('/api/mongodb/dashboard', async (req, res) => {
   try {
@@ -1230,7 +1233,7 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
 
     // Helper para obtener el nombre del pueblo de forma segura
     // Busca pueblo_nombre, si no existe busca pueblo_id
-       const getPuebloField = { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id', '$data.origen'] };
+    const getPuebloField = { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id', '$data.origen'] };
 
     // EJECUTAR TODAS LAS CONSULTAS EN PARALELO
     const [
