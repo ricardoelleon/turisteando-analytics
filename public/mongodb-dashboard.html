@@ -61,6 +61,8 @@
         .entity-name { font-weight: 600; color: var(--text-primary); } .entity-meta { font-size: 0.75rem; color: var(--text-muted); }
         .count-badge { padding: 0.25rem 0.75rem; background: rgba(16, 185, 129, 0.2); color: var(--secondary); border-radius: 20px; font-weight: 600; font-size: 0.85rem; }
         .count-badge.blue { background: rgba(59, 130, 246, 0.2); color: var(--info); }
+        .count-badge.purple { background: rgba(139, 92, 246, 0.2); color: #a78bfa; }
+        .count-badge.orange { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
         .progress-bar { height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden; margin-top: 0.5rem; }
         .progress-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--secondary)); border-radius: 3px; transition: width 0.5s ease; }
         .event-pills { display: flex; flex-wrap: wrap; gap: 0.5rem; }
@@ -90,6 +92,55 @@
         .footer { text-align: center; padding: 2rem; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--card-border); margin-top: 2rem; }
         .tab-content { display: none; } .tab-content.active { display: block; }
         ::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-track { background: var(--darker); } ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 4px; } ::-webkit-scrollbar-thumb:hover { background: var(--primary); }
+
+        /* ==================== NUEVOS ESTILOS JERÁRQUICOS ==================== */
+        .hierarchical-container { background: rgba(0, 0, 0, 0.15); border-radius: 16px; padding: 1rem; }
+        .hierarchy-pueblo { background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; margin-bottom: 1rem; overflow: hidden; }
+        .hierarchy-pueblo-header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; background: rgba(99, 102, 241, 0.15); cursor: pointer; transition: all 0.2s; }
+        .hierarchy-pueblo-header:hover { background: rgba(99, 102, 241, 0.25); }
+        .hierarchy-pueblo-header .pueblo-title { display: flex; align-items: center; gap: 0.75rem; }
+        .hierarchy-pueblo-header .pueblo-title h3 { font-size: 1.1rem; font-weight: 700; margin: 0; }
+        .hierarchy-pueblo-header .pueblo-stats { display: flex; gap: 1rem; align-items: center; }
+        .hierarchy-pueblo-header .pueblo-stats .stat { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
+        .hierarchy-pueblo-header .expand-icon { font-size: 1.2rem; transition: transform 0.3s; }
+        .hierarchy-pueblo.expanded .expand-icon { transform: rotate(180deg); }
+        .hierarchy-pueblo-content { display: none; padding: 1rem; background: rgba(0, 0, 0, 0.2); }
+        .hierarchy-pueblo.expanded .hierarchy-pueblo-content { display: block; }
+        
+        .hierarchy-category { background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 10px; margin-bottom: 0.75rem; overflow: hidden; }
+        .hierarchy-category-header { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: rgba(16, 185, 129, 0.1); cursor: pointer; transition: all 0.2s; }
+        .hierarchy-category-header:hover { background: rgba(16, 185, 129, 0.2); }
+        .hierarchy-category-header .category-title { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; }
+        .hierarchy-category-header .expand-icon { font-size: 1rem; transition: transform 0.3s; }
+        .hierarchy-category.expanded .expand-icon { transform: rotate(180deg); }
+        .hierarchy-category-content { display: none; padding: 0.75rem; }
+        .hierarchy-category.expanded .hierarchy-category-content { display: block; }
+        
+        .hierarchy-entity { background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 8px; margin-bottom: 0.5rem; overflow: hidden; }
+        .hierarchy-entity-header { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.85rem; background: rgba(245, 158, 11, 0.1); cursor: pointer; transition: all 0.2s; }
+        .hierarchy-entity-header:hover { background: rgba(245, 158, 11, 0.2); }
+        .hierarchy-entity-header .entity-title { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; font-size: 0.9rem; }
+        .hierarchy-entity-header .expand-icon { font-size: 0.9rem; transition: transform 0.3s; }
+        .hierarchy-entity.expanded .expand-icon { transform: rotate(180deg); }
+        .hierarchy-entity-content { display: none; padding: 0.5rem 0.75rem; background: rgba(0, 0, 0, 0.2); }
+        .hierarchy-entity.expanded .hierarchy-entity-content { display: block; }
+        
+        .action-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .action-badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.75rem; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 20px; font-size: 0.8rem; transition: all 0.2s; }
+        .action-badge:hover { background: rgba(59, 130, 246, 0.25); }
+        .action-badge .action-icon-small { font-size: 0.9rem; }
+        .action-badge .action-count-small { background: var(--primary); color: white; padding: 0.1rem 0.4rem; border-radius: 8px; font-weight: 600; font-size: 0.7rem; }
+        
+        .view-toggle { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+        .view-toggle-btn { padding: 0.5rem 1rem; background: rgba(0, 0, 0, 0.3); border: 1px solid var(--card-border); color: var(--text-secondary); border-radius: 8px; cursor: pointer; font-size: 0.85rem; transition: all 0.2s; }
+        .view-toggle-btn:hover { background: rgba(99, 102, 241, 0.2); border-color: var(--primary); color: var(--text-primary); }
+        .view-toggle-btn.active { background: var(--primary); border-color: var(--primary); color: white; }
+        
+        .stat-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.6rem; background: rgba(255, 255, 255, 0.1); border-radius: 12px; font-size: 0.75rem; }
+        .stat-chip.green { background: rgba(16, 185, 129, 0.2); color: var(--secondary); }
+        .stat-chip.orange { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+        .stat-chip.blue { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+        .stat-chip.purple { background: rgba(139, 92, 246, 0.2); color: #a78bfa; }
     </style>
 </head>
 <body>
@@ -143,6 +194,25 @@
             <div class="kpi-grid" id="realtimeKpis"><div class="kpi-card purple"><div class="loading"><div class="spinner"></div> Cargando...</div></div></div>
 
             <div class="dashboard-grid">
+                <!-- ==================== NUEVA SECCIÓN: VISTA JERÁRQUICA ==================== -->
+                <div class="card col-12">
+                    <div class="card-header">
+                        <div class="card-title"><span>🌳</span> Vista Jerárquica: Pueblo → Categoría → Entidad → Acciones</div>
+                        <span class="card-badge">Expandir para ver detalle</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="view-toggle">
+                            <button class="view-toggle-btn active" onclick="toggleView('hierarchical')">📋 Vista Jerárquica</button>
+                            <button class="view-toggle-btn" onclick="toggleView('simple')">📊 Vista Simple</button>
+                            <button class="view-toggle-btn" onclick="expandAll()">➕ Expandir Todo</button>
+                            <button class="view-toggle-btn" onclick="collapseAll()">➖ Colapsar Todo</button>
+                        </div>
+                        <div id="hierarchicalView" class="hierarchical-container">
+                            <div class="loading"><div class="spinner"></div> Cargando datos jerárquicos...</div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="card col-6">
                     <div class="card-header"><div class="card-title"><span>🏘️</span> Pueblos Más Visitados</div><span class="card-badge" id="rtPueblosCount">0</span></div>
                     <div class="card-body" id="rtPueblosBody"><div class="loading"><div class="spinner"></div> Cargando...</div></div>
@@ -199,6 +269,7 @@
         const API_BASE = 'https://turisteando-analytics.onrender.com';
         let charts = { realtimeEvents: null, realtimePie: null, historicalUsers: null, historicalPlatform: null };
         let allRealtimeData = null;
+        let hierarchicalData = null;
 
         document.addEventListener('DOMContentLoaded', () => {
             initTabs();
@@ -235,18 +306,342 @@
                 if (result.success) {
                     document.getElementById('connectionStatus').textContent = 'MongoDB Conectado';
                     allRealtimeData = result.data;
+                    hierarchicalData = buildHierarchicalData(result.data);
                     populateFilters();
                     applyFilters();
                     renderRealtimeKpis(result.data);
                     renderRealtimeEventsChart(result.data.eventsByDay);
                     renderRealtimeEventsPie(result.data.eventsByType);
                     renderRealtimeEventTypes(result.data.eventsByType);
+                    renderHierarchicalView();
                     updateTimestamp();
                 } else throw new Error(result.error);
             } catch (error) {
                 console.error('Error MongoDB:', error);
                 document.getElementById('connectionStatus').textContent = 'Error MongoDB';
             }
+        }
+
+        // ==================== NUEVA FUNCIÓN: Construir datos jerárquicos ====================
+        function buildHierarchicalData(data) {
+            if (!data) return null;
+            
+            const hierarchy = {};
+            const actionIcons = {
+                'llamar': '📞', 'whatsapp': '💬', 'abrir_mapa': '🗺️', 
+                'abrir_info': 'ℹ️', 'share': '📤', 'social_facebook': '📘', 
+                'social_instagram': '📸', 'social_tiktok': '🎵', 'social_whatsapp': '💬'
+            };
+            
+            // Procesar cada categoría para agrupar por pueblo
+            if (data.topCategorias) {
+                data.topCategorias.forEach(cat => {
+                    const pueblo = cat.pueblo || 'Sin Pueblo';
+                    if (!hierarchy[pueblo]) {
+                        hierarchy[pueblo] = {
+                            name: pueblo,
+                            count: 0,
+                            categories: {}
+                        };
+                    }
+                    hierarchy[pueblo].count += cat.count || 0;
+                    
+                    const catName = cat.categoria || 'Sin Categoría';
+                    if (!hierarchy[pueblo].categories[catName]) {
+                        hierarchy[pueblo].categories[catName] = {
+                            name: catName,
+                            count: 0,
+                            entities: {}
+                        };
+                    }
+                    hierarchy[pueblo].categories[catName].count += cat.count || 0;
+                });
+            }
+            
+            // Procesar entidades para agregarlas a la jerarquía
+            if (data.topEntidades) {
+                data.topEntidades.forEach(ent => {
+                    const pueblo = ent.pueblo || 'Sin Pueblo';
+                    const catName = ent.categoria || 'Sin Categoría';
+                    const entName = ent.entidad || ent.entity || 'Sin Nombre';
+                    
+                    if (!hierarchy[pueblo]) {
+                        hierarchy[pueblo] = { name: pueblo, count: 0, categories: {} };
+                    }
+                    
+                    if (!hierarchy[pueblo].categories[catName]) {
+                        hierarchy[pueblo].categories[catName] = { name: catName, count: 0, entities: {} };
+                    }
+                    
+                    if (!hierarchy[pueblo].categories[catName].entities[entName]) {
+                        hierarchy[pueblo].categories[catName].entities[entName] = {
+                            name: entName,
+                            count: 0,
+                            actions: {}
+                        };
+                    }
+                    hierarchy[pueblo].categories[catName].entities[entName].count += ent.count || 0;
+                });
+            }
+            
+            // Procesar acciones para agregarlas a las entidades
+            if (data.acciones) {
+                data.acciones.forEach(act => {
+                    const pueblo = act.pueblo || 'Sin Pueblo';
+                    const entName = act.entity || act.entidad || 'Sin Entidad';
+                    const actionName = act.action || 'Sin Acción';
+                    
+                    // Buscar o crear la estructura
+                    if (!hierarchy[pueblo]) {
+                        hierarchy[pueblo] = { name: pueblo, count: 0, categories: {} };
+                    }
+                    
+                    // Buscar la entidad en todas las categorías del pueblo
+                    let foundEntity = null;
+                    let foundCatName = null;
+                    for (const [catName, cat] of Object.entries(hierarchy[pueblo].categories)) {
+                        if (cat.entities[entName]) {
+                            foundEntity = cat.entities[entName];
+                            foundCatName = catName;
+                            break;
+                        }
+                    }
+                    
+                    if (!foundEntity) {
+                        // Crear entidad si no existe
+                        const defaultCat = 'General';
+                        if (!hierarchy[pueblo].categories[defaultCat]) {
+                            hierarchy[pueblo].categories[defaultCat] = { name: defaultCat, count: 0, entities: {} };
+                        }
+                        hierarchy[pueblo].categories[defaultCat].entities[entName] = {
+                            name: entName,
+                            count: 0,
+                            actions: {}
+                        };
+                        foundEntity = hierarchy[pueblo].categories[defaultCat].entities[entName];
+                        foundCatName = defaultCat;
+                    }
+                    
+                    if (!foundEntity.actions[actionName]) {
+                        foundEntity.actions[actionName] = {
+                            name: actionName,
+                            count: 0,
+                            icon: actionIcons[actionName] || '📌'
+                        };
+                    }
+                    foundEntity.actions[actionName].count += act.count || 0;
+                });
+            }
+            
+            // Actualizar conteos de entidades basados en acciones
+            for (const pueblo of Object.values(hierarchy)) {
+                for (const cat of Object.values(pueblo.categories)) {
+                    for (const ent of Object.values(cat.entities)) {
+                        if (ent.actions && Object.keys(ent.actions).length > 0) {
+                            const actionsTotal = Object.values(ent.actions).reduce((sum, a) => sum + a.count, 0);
+                            if (ent.count === 0) ent.count = actionsTotal;
+                        }
+                    }
+                    const entitiesTotal = Object.values(cat.entities).reduce((sum, e) => sum + e.count, 0);
+                    if (cat.count === 0) cat.count = entitiesTotal;
+                }
+                const catsTotal = Object.values(pueblo.categories).reduce((sum, c) => sum + c.count, 0);
+                if (pueblo.count === 0) pueblo.count = catsTotal;
+            }
+            
+            return hierarchy;
+        }
+
+        // ==================== NUEVA FUNCIÓN: Renderizar vista jerárquica ====================
+        function renderHierarchicalView() {
+            const container = document.getElementById('hierarchicalView');
+            if (!hierarchicalData || Object.keys(hierarchicalData).length === 0) {
+                container.innerHTML = '<div class="empty-state"><span>🌳</span><p>No hay datos jerárquicos disponibles</p></div>';
+                return;
+            }
+            
+            const sortedPueblos = Object.values(hierarchicalData).sort((a, b) => b.count - a.count);
+            
+            let html = '';
+            sortedPueblos.forEach((pueblo, pIdx) => {
+                const catCount = Object.keys(pueblo.categories).length;
+                const entityCount = Object.values(pueblo.categories).reduce((sum, c) => sum + Object.keys(c.entities).length, 0);
+                
+                html += `
+                    <div class="hierarchy-pueblo" data-pueblo="${pueblo.name}">
+                        <div class="hierarchy-pueblo-header" onclick="togglePueblo(this)">
+                            <div class="pueblo-title">
+                                <span class="expand-icon">▼</span>
+                                <span style="font-size: 1.5rem;">🏘️</span>
+                                <h3>${pueblo.name}</h3>
+                            </div>
+                            <div class="pueblo-stats">
+                                <span class="stat-chip green">📊 ${pueblo.count.toLocaleString()} eventos</span>
+                                <span class="stat-chip orange">📁 ${catCount} categorías</span>
+                                <span class="stat-chip blue">⭐ ${entityCount} lugares</span>
+                            </div>
+                        </div>
+                        <div class="hierarchy-pueblo-content">
+                            ${renderCategories(pueblo.categories)}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function renderCategories(categories) {
+            const sortedCategories = Object.values(categories).sort((a, b) => b.count - a.count);
+            let html = '';
+            
+            sortedCategories.forEach(cat => {
+                const entityCount = Object.keys(cat.entities).length;
+                html += `
+                    <div class="hierarchy-category">
+                        <div class="hierarchy-category-header" onclick="toggleCategory(this)">
+                            <div class="category-title">
+                                <span class="expand-icon">▼</span>
+                                <span>📁</span>
+                                <span>${cat.name}</span>
+                            </div>
+                            <div>
+                                <span class="count-badge">${cat.count.toLocaleString()}</span>
+                                <span class="stat-chip blue" style="margin-left: 0.5rem;">${entityCount} lugares</span>
+                            </div>
+                        </div>
+                        <div class="hierarchy-category-content">
+                            ${renderEntities(cat.entities)}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            return html;
+        }
+        
+        function renderEntities(entities) {
+            const sortedEntities = Object.values(entities).sort((a, b) => b.count - a.count);
+            let html = '';
+            
+            sortedEntities.forEach(ent => {
+                const actionCount = Object.keys(ent.actions || {}).length;
+                html += `
+                    <div class="hierarchy-entity">
+                        <div class="hierarchy-entity-header" onclick="toggleEntity(this)">
+                            <div class="entity-title">
+                                <span class="expand-icon">▼</span>
+                                <span>⭐</span>
+                                <span>${ent.name}</span>
+                            </div>
+                            <div>
+                                <span class="count-badge orange">${ent.count.toLocaleString()}</span>
+                                <span class="stat-chip purple" style="margin-left: 0.5rem;">${actionCount} acciones</span>
+                            </div>
+                        </div>
+                        <div class="hierarchy-entity-content">
+                            ${renderActions(ent.actions)}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            return html;
+        }
+        
+        function renderActions(actions) {
+            if (!actions || Object.keys(actions).length === 0) {
+                return '<p style="color: var(--text-muted); font-size: 0.85rem;">Sin acciones registradas</p>';
+            }
+            
+            const sortedActions = Object.values(actions).sort((a, b) => b.count - a.count);
+            let html = '<div class="action-list">';
+            
+            sortedActions.forEach(act => {
+                html += `
+                    <div class="action-badge">
+                        <span class="action-icon-small">${act.icon}</span>
+                        <span style="text-transform: capitalize;">${act.name}</span>
+                        <span class="action-count-small">${act.count.toLocaleString()}</span>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            return html;
+        }
+        
+        // ==================== FUNCIONES DE TOGGLE ====================
+        function togglePueblo(header) {
+            const pueblo = header.parentElement;
+            pueblo.classList.toggle('expanded');
+        }
+        
+        function toggleCategory(header) {
+            const category = header.parentElement;
+            category.classList.toggle('expanded');
+        }
+        
+        function toggleEntity(header) {
+            const entity = header.parentElement;
+            entity.classList.toggle('expanded');
+        }
+        
+        function expandAll() {
+            document.querySelectorAll('.hierarchy-pueblo, .hierarchy-category, .hierarchy-entity').forEach(el => {
+                el.classList.add('expanded');
+            });
+        }
+        
+        function collapseAll() {
+            document.querySelectorAll('.hierarchy-pueblo, .hierarchy-category, .hierarchy-entity').forEach(el => {
+                el.classList.remove('expanded');
+            });
+        }
+        
+        function toggleView(view) {
+            document.querySelectorAll('.view-toggle-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            const container = document.getElementById('hierarchicalView');
+            if (view === 'simple') {
+                renderSimpleView();
+            } else {
+                renderHierarchicalView();
+            }
+        }
+        
+        function renderSimpleView() {
+            const container = document.getElementById('hierarchicalView');
+            if (!allRealtimeData) {
+                container.innerHTML = '<div class="empty-state"><span>📊</span><p>Sin datos</p></div>';
+                return;
+            }
+            
+            container.innerHTML = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+                    <div style="background: rgba(99, 102, 241, 0.1); padding: 1rem; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2rem;">🏘️</div>
+                        <div style="font-size: 1.5rem; font-weight: 700;">${allRealtimeData.topPueblos?.length || 0}</div>
+                        <div style="color: var(--text-muted); font-size: 0.85rem;">Pueblos</div>
+                    </div>
+                    <div style="background: rgba(16, 185, 129, 0.1); padding: 1rem; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2rem;">📁</div>
+                        <div style="font-size: 1.5rem; font-weight: 700;">${allRealtimeData.topCategorias?.length || 0}</div>
+                        <div style="color: var(--text-muted); font-size: 0.85rem;">Categorías</div>
+                    </div>
+                    <div style="background: rgba(245, 158, 11, 0.1); padding: 1rem; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2rem;">⭐</div>
+                        <div style="font-size: 1.5rem; font-weight: 700;">${allRealtimeData.topEntidades?.length || 0}</div>
+                        <div style="color: var(--text-muted); font-size: 0.85rem;">Lugares</div>
+                    </div>
+                    <div style="background: rgba(59, 130, 246, 0.1); padding: 1rem; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2rem;">⚡</div>
+                        <div style="font-size: 1.5rem; font-weight: 700;">${allRealtimeData.acciones?.reduce((s,a)=>s+a.count,0) || 0}</div>
+                        <div style="color: var(--text-muted); font-size: 0.85rem;">Acciones</div>
+                    </div>
+                </div>
+            `;
         }
 
         function populateFilters() {
@@ -315,12 +710,42 @@
 
         // Render Helpers
         function renderRealtimeKpis(data) {
+            // Calcular total de eventos de múltiples fuentes para nunca perder el número
+            let totalEvents = 0;
+            
+            // Opción 1: Del resumen del servidor (formato nuevo)
+            if (data.resumen?.totalEventos && data.resumen.totalEventos > 0) {
+                totalEvents = data.resumen.totalEventos;
+            }
+            // Opción 2: Del servidor directamente (formato anterior)
+            else if (data.totalEvents && data.totalEvents > 0) {
+                totalEvents = data.totalEvents;
+            }
+            // Opción 3: Sumar eventos por día
+            else if (data.eventsByDay && data.eventsByDay.length > 0) {
+                totalEvents = data.eventsByDay.reduce((sum, d) => sum + (d.count || 0), 0);
+            }
+            // Opción 4: Sumar eventos por tipo
+            else if (data.eventsByType && data.eventsByType.length > 0) {
+                totalEvents = data.eventsByType.reduce((sum, d) => sum + (d.count || 0), 0);
+            }
+            // Opción 5: Sumar todas las acciones
+            else if (data.acciones && data.acciones.length > 0) {
+                totalEvents = data.acciones.reduce((sum, a) => sum + (a.count || 0), 0);
+            }
+            // Opción 6: Sumar todos los pueblos
+            else if (data.topPueblos && data.topPueblos.length > 0) {
+                totalEvents = data.topPueblos.reduce((sum, p) => sum + (p.count || 0), 0);
+            }
+            
+            const totalAcciones = data.acciones?.reduce((s,a)=>s+(a.count||0),0) || 0;
+            
             const kpis = [
-                { icon: '📊', label: 'Total Eventos', value: data.totalEvents || 0, color: 'purple' },
+                { icon: '📊', label: 'Total Eventos', value: totalEvents, color: 'purple' },
                 { icon: '🏘️', label: 'Pueblos', value: data.topPueblos?.length || 0, color: 'cyan' },
                 { icon: '📁', label: 'Categorías', value: data.topCategorias?.length || 0, color: 'green' },
                 { icon: '⭐', label: 'Lugares', value: data.topEntidades?.length || 0, color: 'orange' },
-                { icon: '⚡', label: 'Acciones', value: data.acciones?.reduce((s,a)=>s+a.count,0) || 0, color: 'blue' }
+                { icon: '⚡', label: 'Acciones', value: totalAcciones, color: 'blue' }
             ];
             document.getElementById('realtimeKpis').innerHTML = kpis.map(k => `<div class="kpi-card ${k.color}"><div class="kpi-icon">${k.icon}</div><div class="kpi-value">${k.value.toLocaleString()}</div><div class="kpi-label">${k.label}</div></div>`).join('');
         }
@@ -443,8 +868,39 @@
         }
         
         // Simplified render functions for historical (similar logic to realtime but simpler data structure)
-        function renderHistoricalUsersChart(d) { /* Chart logic similar to realtime, omitted for brevity but functional in full code */ }
-        function renderHistoricalPlatformChart(d) { /* Chart logic similar to realtime */ }
+        function renderHistoricalUsersChart(d) {
+            const ctx = document.getElementById('historicalUsersChart').getContext('2d');
+            if (charts.historicalUsers) charts.historicalUsers.destroy();
+            if (!d?.length) return;
+            charts.historicalUsers = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: d.map(x => new Date(x.date).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })),
+                    datasets: [{
+                        label: 'Usuarios',
+                        data: d.map(x => x.users),
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } }, y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' }, beginAtZero: true } } }
+            });
+        }
+        
+        function renderHistoricalPlatformChart(d) {
+            const ctx = document.getElementById('historicalPlatformChart').getContext('2d');
+            if (charts.historicalPlatform) charts.historicalPlatform.destroy();
+            if (!d?.length) return;
+            const colors = ['#6366f1', '#10b981', '#f59e0b', '#ef4444'];
+            charts.historicalPlatform = new Chart(ctx, {
+                type: 'pie',
+                data: { labels: d.map(x => x.platform || x.name), datasets: [{ data: d.map(x => x.users || x.count), backgroundColor: colors, borderColor: '#1e293b', borderWidth: 2 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8', padding: 8, usePointStyle: true, font: { size: 9 } } } } }
+            });
+        }
+        
         function renderHistoricalPueblos(d) { document.getElementById('hPueblosCount').textContent = d?.length||0; document.getElementById('hPueblosBody').innerHTML = d?.length ? `<table class="data-table"><tbody>${d.slice(0,10).map((it,i)=>`<tr><td><span class="rank">${i+1}</span></td><td>${it.pueblo||it.name}</td><td><span class="count-badge">${it.views||it.count}</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state"><span>📅</span><p>Sin datos</p></div>'; }
         function renderHistoricalCategorias(d) { document.getElementById('hCategoriasCount').textContent = d?.length||0; document.getElementById('hCategoriasBody').innerHTML = d?.length ? `<div class="event-pills">${d.slice(0,15).map(it=>`<div class="event-pill">${it.categoria||it.name}<span class="count">${it.clicks||it.count}</span></div>`).join('')}</div>` : '<div class="empty-state"><span>📁</span><p>Sin datos</p></div>'; }
         function renderHistoricalEntidades(d) { document.getElementById('hEntidadesCount').textContent = d?.length||0; document.getElementById('hEntidadesBody').innerHTML = d?.length ? `<table class="data-table"><tbody>${d.slice(0,8).map((it,i)=>`<tr><td><span class="rank">${i+1}</span></td><td>${it.entidad||it.name}<br><span style="font-size:0.7rem;color:var(--text-muted)">${it.categoria||''}</span></td><td><span class="count-badge">${it.clicks||it.count}</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state"><span>⭐</span><p>Sin datos</p></div>'; }
