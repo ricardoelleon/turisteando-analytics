@@ -117,7 +117,7 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     propertyId: PROPERTY_ID,
     mongodb: mongoDb ? 'connected' : 'disconnected',
-    version: '3.0.0-hierarchical' // Versión actualizada
+    version: '3.1.0-hierarchical-fixed'
   });
 });
 
@@ -1209,7 +1209,9 @@ app.post('/api/mongodb/event', async (req, res) => {
 });
 
 // ========================================
-// DASHBOARD MONGODB - JERÁRQUICO (PUEBLO → CATEGORÍA → SITIO → ACCIONES)
+// DASHBOARD MONGODB - JERÁRQUICO CORREGIDO
+// Los campos están a NIVEL RAÍZ, no dentro de data
+// pueblo_id, category_name, entity_name, action están al nivel superior
 // ========================================
 
 app.get('/api/mongodb/dashboard', async (req, res) => {
@@ -1222,17 +1224,19 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
 
+    console.log(`📊 Dashboard MongoDB: últimos ${days} días`);
+
     // ========================================
-    // PASO 1: OBTENER TODOS LOS DATOS CRUDOS
+    // CONSULTAS - CAMPOS A NIVEL RAÍZ (no dentro de data)
     // ========================================
     
     const [
       totalEvents,
       eventsByType,
-      pueblosViews,
-      categoriasData,
-      entidadesData,
-      accionesData,
+      pueblosRaw,
+      categoriasRaw,
+      entidadesRaw,
+      accionesRaw,
       eventsByDay
     ] = await Promise.all([
       // 1. Total de eventos
@@ -1246,108 +1250,103 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         { $limit: 20 }
       ]).toArray(),
       
-      // 3. Vistas de pueblos (pueblo_view y screen_view con town)
+      // 3. PUEBLOS - Buscar pueblo_id a nivel raíz (donde está "raquira")
       mongoDb.collection('events').aggregate([
         { $match: { 
           server_time: { $gte: startDate },
-          $or: [
-            { event_name: 'pueblo_view' },
-            { event_name: 'screen_view', 'data.screen_category': 'town' },
-            { event_name: 'abrir_mapa_pueblo' }
-          ]
+          pueblo_id: { $exists: true, $ne: null, $ne: '' }
         }},
-        { $project: {
-          pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.town_name', '$data.pueblo_id', '$data.screen_name'] }
+        { $group: { 
+          _id: '$pueblo_id',
+          pueblo_nombre: { $first: '$pueblo_nombre' },
+          views: { $sum: 1 }
         }},
-        { $match: { pueblo: { $ne: null, $ne: '' } } },
-        { $group: { _id: '$pueblo', views: { $sum: 1 } } },
         { $sort: { views: -1 } },
         { $limit: 20 }
       ]).toArray(),
       
-      // 4. Categorías con pueblo
+      // 4. CATEGORÍAS por PUEBLO - Campos a nivel raíz
       mongoDb.collection('events').aggregate([
         { $match: { 
           server_time: { $gte: startDate },
-          event_name: { $in: ['category_view', 'category_click'] }
+          category_name: { $exists: true, $ne: null, $ne: '' }
         }},
-        { $project: {
-          categoria: { $ifNull: ['$data.category_name', '$data.category_id'] },
-          pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }
-        }},
-        { $match: { categoria: { $ne: null, $ne: '' } } },
-        { $group: { _id: { categoria: '$categoria', pueblo: '$pueblo' }, count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 30 }
-      ]).toArray(),
-      
-      // 5. Entidades con categoría y pueblo
-      mongoDb.collection('events').aggregate([
-        { $match: { 
-          server_time: { $gte: startDate },
-          event_name: { $in: ['entity_clicked', 'entity_detail_view'] }
-        }},
-        { $project: {
-          entidad: { $ifNull: ['$data.entity_name', '$data.lugar_nombre'] },
-          categoria: { $ifNull: ['$data.category_name', '$data.category_id'] },
-          pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }
-        }},
-        { $match: { entidad: { $ne: null, $ne: '' } } },
-        { $group: { _id: { entidad: '$entidad', categoria: '$categoria', pueblo: '$pueblo' }, clicks: { $sum: 1 } } },
-        { $sort: { clicks: -1 } },
-        { $limit: 50 }
-      ]).toArray(),
-      
-      // 6. Acciones con entidad, categoría y pueblo
-      mongoDb.collection('events').aggregate([
-        { $match: { 
-          server_time: { $gte: startDate },
-          event_name: { $in: ['entity_action', 'abrir_mapa', 'abrir_informacion', 'social_network_open', 'whatsapp_open', 'phone_call', 'share'] }
-        }},
-        { $project: {
-          action: {
-            $switch: {
-              branches: [
-                { case: { $eq: ['$event_name', 'abrir_mapa'] }, then: 'abrir_mapa' },
-                { case: { $eq: ['$event_name', 'abrir_informacion'] }, then: 'abrir_web' },
-                { case: { $eq: ['$event_name', 'social_network_open'] }, then: { $concat: ['ver_', '$data.network'] } },
-                { case: { $eq: ['$event_name', 'whatsapp_open'] }, then: 'whatsapp' },
-                { case: { $eq: ['$event_name', 'phone_call'] }, then: 'llamar' },
-                { case: { $eq: ['$event_name', 'share'] }, then: 'compartir' }
-              ],
-              default: '$data.action'
-            }
+        { $group: { 
+          _id: {
+            categoria: '$category_name',
+            pueblo: '$pueblo_id'
           },
-          entity: { $ifNull: ['$data.entity_name', '$data.lugar_nombre'] },
-          categoria: { $ifNull: ['$data.category_name', '$data.category_id'] },
-          pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id', '$data.origen'] }
+          views: { $sum: 1 }
         }},
-        { $match: { action: { $ne: null, $ne: '' } } },
-        { $group: { _id: { action: '$action', entity: '$entity', categoria: '$categoria', pueblo: '$pueblo' }, count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
+        { $sort: { views: -1 } },
         { $limit: 50 }
+      ]).toArray(),
+      
+      // 5. ENTIDADES por CATEGORÍA y PUEBLO - Campos a nivel raíz
+      mongoDb.collection('events').aggregate([
+        { $match: { 
+          server_time: { $gte: startDate },
+          entity_name: { $exists: true, $ne: null, $ne: '' }
+        }},
+        { $group: { 
+          _id: {
+            entidad: '$entity_name',
+            categoria: { $ifNull: ['$category_name', 'Sin categoría'] },
+            pueblo: '$pueblo_id'
+          },
+          clicks: { $sum: 1 }
+        }},
+        { $sort: { clicks: -1 } },
+        { $limit: 100 }
+      ]).toArray(),
+      
+      // 6. ACCIONES - Campo action a nivel raíz
+      mongoDb.collection('events').aggregate([
+        { $match: { 
+          server_time: { $gte: startDate },
+          action: { $exists: true, $ne: null, $ne: '' }
+        }},
+        { $group: { 
+          _id: {
+            action: '$action',
+            entidad: '$entity_name',
+            categoria: { $ifNull: ['$category_name', 'Sin categoría'] },
+            pueblo: '$pueblo_id'
+          },
+          count: { $sum: 1 }
+        }},
+        { $sort: { count: -1 } },
+        { $limit: 100 }
       ]).toArray(),
       
       // 7. Eventos por día
       mongoDb.collection('events').aggregate([
         { $match: { server_time: { $gte: startDate } } },
-        { $group: { _id: '$date', count: { $sum: 1 }, devices: { $addToSet: '$data.device_model' } } },
+        { $group: { 
+          _id: '$date', 
+          count: { $sum: 1 }, 
+          devices: { $addToSet: '$device_model' } 
+        }},
         { $project: { _id: 0, date: '$_id', count: 1, devices: { $size: '$devices' } } },
         { $sort: { date: 1 } }
       ]).toArray()
     ]);
 
+    console.log(`📊 Pueblos: ${pueblosRaw.length}, Categorías: ${categoriasRaw.length}, Entidades: ${entidadesRaw.length}, Acciones: ${accionesRaw.length}`);
+
     // ========================================
-    // PASO 2: CONSTRUIR ESTRUCTURA JERÁRQUICA
+    // CONSTRUIR ESTRUCTURA JERÁRQUICA
     // ========================================
     
     const pueblosMap = new Map();
     
-    // Inicializar pueblos
-    pueblosViews.forEach(p => {
+    // Agregar pueblos
+    pueblosRaw.forEach(p => {
       if (p._id) {
+        const nombre = p.pueblo_nombre || p._id;
         pueblosMap.set(p._id, {
-          nombre: p._id,
+          id: p._id,
+          nombre: nombre,
           vistas: p.views,
           categorias: new Map(),
           entidades: new Map()
@@ -1355,74 +1354,91 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       }
     });
     
-    // Agregar categorías a pueblos
-    categoriasData.forEach(c => {
-      const puebloNombre = c._id.pueblo || 'Sin pueblo';
+    // Agregar categorías a sus pueblos
+    categoriasRaw.forEach(c => {
+      const puebloId = c._id.pueblo;
       const categoriaNombre = c._id.categoria;
       
-      if (!pueblosMap.has(puebloNombre)) {
-        pueblosMap.set(puebloNombre, {
-          nombre: puebloNombre,
+      if (!puebloId) return;
+      
+      // Crear pueblo si no existe
+      if (!pueblosMap.has(puebloId)) {
+        pueblosMap.set(puebloId, {
+          id: puebloId,
+          nombre: puebloId,
           vistas: 0,
           categorias: new Map(),
           entidades: new Map()
         });
       }
       
-      const pueblo = pueblosMap.get(puebloNombre);
+      const pueblo = pueblosMap.get(puebloId);
       pueblo.categorias.set(categoriaNombre, {
         nombre: categoriaNombre,
-        vistas: c.count,
+        vistas: c.views,
         entidades: new Map()
       });
     });
     
-    // Agregar entidades a pueblos y categorías
-    entidadesData.forEach(e => {
-      const puebloNombre = e._id.pueblo || 'Sin pueblo';
-      const categoriaNombre = e._id.categoria || 'Sin categoría';
+    // Agregar entidades a sus categorías y pueblos
+    entidadesRaw.forEach(e => {
+      const puebloId = e._id.pueblo;
+      const categoriaNombre = e._id.categoria;
       const entidadNombre = e._id.entidad;
       
-      if (!pueblosMap.has(puebloNombre)) {
-        pueblosMap.set(puebloNombre, {
-          nombre: puebloNombre,
+      if (!puebloId || !entidadNombre) return;
+      
+      // Crear pueblo si no existe
+      if (!pueblosMap.has(puebloId)) {
+        pueblosMap.set(puebloId, {
+          id: puebloId,
+          nombre: puebloId,
           vistas: 0,
           categorias: new Map(),
           entidades: new Map()
         });
       }
       
-      const pueblo = pueblosMap.get(puebloNombre);
+      const pueblo = pueblosMap.get(puebloId);
       
-      // Agregar a la entidad del pueblo
+      // Crear categoría si no existe en este pueblo
+      if (!pueblo.categorias.has(categoriaNombre)) {
+        pueblo.categorias.set(categoriaNombre, {
+          nombre: categoriaNombre,
+          vistas: 0,
+          entidades: new Map()
+        });
+      }
+      
+      // Agregar entidad a la categoría
+      const categoria = pueblo.categorias.get(categoriaNombre);
+      categoria.entidades.set(entidadNombre, {
+        nombre: entidadNombre,
+        clicks: e.clicks,
+        acciones: []
+      });
+      
+      // También agregar al mapa general de entidades del pueblo
       pueblo.entidades.set(entidadNombre, {
         nombre: entidadNombre,
         categoria: categoriaNombre,
         clicks: e.clicks,
         acciones: []
       });
-      
-      // Agregar a la categoría si existe
-      if (pueblo.categorias.has(categoriaNombre)) {
-        const categoria = pueblo.categorias.get(categoriaNombre);
-        categoria.entidades.set(entidadNombre, {
-          nombre: entidadNombre,
-          clicks: e.clicks,
-          acciones: []
-        });
-      }
     });
     
-    // Agregar acciones a entidades
-    accionesData.forEach(a => {
-      const puebloNombre = a._id.pueblo || 'Sin pueblo';
-      const entidadNombre = a._id.entity;
+    // Agregar acciones a las entidades
+    accionesRaw.forEach(a => {
+      const puebloId = a._id.pueblo;
+      const entidadNombre = a._id.entidad;
       const actionName = a._id.action;
       
-      if (pueblosMap.has(puebloNombre)) {
-        const pueblo = pueblosMap.get(puebloNombre);
+      if (!puebloId || !entidadNombre || !actionName) return;
+      
+      if (pueblosMap.has(puebloId)) {
+        const pueblo = pueblosMap.get(puebloId);
         
-        if (entidadNombre && pueblo.entidades.has(entidadNombre)) {
+        if (pueblo.entidades.has(entidadNombre)) {
           const entidad = pueblo.entidades.get(entidadNombre);
           entidad.acciones.push({
             accion: actionName,
@@ -1431,13 +1447,14 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         }
       }
     });
-    
+
     // ========================================
-    // PASO 3: CONVERTIR MAPS A ARRAYS
+    // CONVERTIR MAPS A ARRAYS
     // ========================================
     
-    const pueblosJerarquico = Array.from(pueblosMap.values()).map(p => ({
+    const pueblos = Array.from(pueblosMap.values()).map(p => ({
       nombre: p.nombre,
+      id: p.id,
       vistas: p.vistas,
       categorias: Array.from(p.categorias.values()).map(c => ({
         nombre: c.nombre,
@@ -1457,44 +1474,43 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
     })).sort((a, b) => b.vistas - a.vistas);
 
     // ========================================
-    // PASO 4: RESPUESTA
+    // RESPUESTA
     // ========================================
     
     res.json({
       success: true,
       data: {
-        // Resumen
         resumen: {
           totalEventos: totalEvents,
-          totalPueblos: pueblosJerarquico.length,
+          totalPueblos: pueblos.length,
           periodo: `Últimos ${days} días`
         },
-        
-        // Estructura jerárquica
-        pueblos: pueblosJerarquico,
-        
-        // Datos planos (para compatibilidad)
+        pueblos: pueblos,
         eventosPorTipo: eventsByType.map(e => ({ evento: e._id, count: e.count })),
-        topPueblos: pueblosViews.map(p => ({ pueblo: p._id, count: p.views })),
-        topCategorias: categoriasData.map(c => ({ 
+        eventosPorDia: eventsByDay,
+        // Datos planos para compatibilidad
+        topPueblos: pueblosRaw.map(p => ({ 
+          pueblo: p.pueblo_nombre || p._id, 
+          count: p.views 
+        })),
+        topCategorias: categoriasRaw.map(c => ({ 
           categoria: c._id.categoria, 
           pueblo: c._id.pueblo,
-          count: c.count 
+          count: c.views 
         })),
-        topEntidades: entidadesData.map(e => ({ 
+        topEntidades: entidadesRaw.map(e => ({ 
           entidad: e._id.entidad, 
           categoria: e._id.categoria,
           pueblo: e._id.pueblo,
           count: e.clicks 
         })),
-        acciones: accionesData.map(a => ({ 
+        acciones: accionesRaw.map(a => ({ 
           action: a._id.action, 
-          entity: a._id.entity,
+          entity: a._id.entidad,
           categoria: a._id.categoria,
           pueblo: a._id.pueblo,
           count: a.count 
-        })),
-        eventsByDay
+        }))
       }
     });
     
@@ -1531,8 +1547,8 @@ app.get('/api/mongodb/events/recent', async (req, res) => {
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v3.0 (Hierarchical) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v3.1 (Hierarchical Fixed) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-}); 
+});
