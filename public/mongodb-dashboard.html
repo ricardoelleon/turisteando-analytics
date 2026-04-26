@@ -353,7 +353,17 @@
             document.getElementById('rtAccionesCount').textContent = data?.length || 0;
             const container = document.getElementById('rtAccionesBody');
             if (!data?.length) return container.innerHTML = '<div class="empty-state"><span>⚡</span><p>Sin datos</p></div>';
-            const icons = { 'llamar': '📞', 'whatsapp': '💬', 'abrir_mapa': '🗺️', 'abrir_info': 'ℹ️', 'share': '📤' };
+            const icons = { 
+               'llamar': '📞', 
+               'whatsapp': '💬', 
+               'abrir_mapa': '🗺️', 
+               'abrir_info': 'ℹ️', 
+               'share': '📤',
+               'social_facebook': '📘', 
+               'social_instagram': '📸', 
+               'social_tiktok': '🎵',
+               'social_whatsapp': '💬'
+                                      };
             container.innerHTML = `<table class="data-table"><thead><tr><th>Acción</th><th>Entidad</th><th>Pueblo</th><th>Total</th></tr></thead><tbody>${data.slice(0,6).map(it=>`<tr><td style="text-transform:capitalize">${icons[it.action]||'📌'} ${it.action||'-'}</td><td>${it.entity||it.entidad||'-'}</td><td style="color:var(--text-muted)">${it.pueblo||'-'}</td><td><span class="count-badge blue">${it.count}</span></td></tr>`).join('')}</tbody></table>`;
         }
 
