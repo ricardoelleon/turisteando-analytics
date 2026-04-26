@@ -1295,13 +1295,29 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       ]).toArray(),
       
       // 6. Acciones (CORREGIDO: Agrupa por Acción, Entidad Y Pueblo)
+            // 6. Acciones (CORREGIDO: Incluye entity_action Y abrir_mapa)
       mongoDb.collection('events').aggregate([
-        { $match: { server_time: { $gte: startDate }, event_name: 'entity_action' } },
+        { $match: { 
+            server_time: { $gte: startDate }, 
+            event_name: { $in: ['entity_action', 'abrir_mapa', 'social_network_open'] } // Incluimos mapa y redes
+        }},
+        { $project: {
+            // Si es abrir_mapa, forzamos la acción a ser 'abrir_mapa'. Si no, usamos la acción del dato.
+            action: { 
+                $cond: { 
+                    if: { $eq: ["$event_name", "abrir_mapa"] }, 
+                    then: "abrir_mapa", 
+                    else: "$data.action" 
+                } 
+            },
+            entity: "$data.entity_name",
+            pueblo: { $ifNull: ["$data.pueblo_nombre", "$data.pueblo_id", "$data.origen"] }
+        }},
         { $group: { 
             _id: { 
-              action: '$data.action', 
-              entity: '$data.entity_name', 
-              pueblo: getPuebloField 
+                action: "$action", 
+                entity: "$entity", 
+                pueblo: "$pueblo" 
             }, 
             count: { $sum: 1 } 
         }},
