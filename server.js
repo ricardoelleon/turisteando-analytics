@@ -2,6 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const { BetaAnalyticsDataClient } = require('@google-analytics/data');
 const { MongoClient } = require('mongodb');
+// ========================================
+// NUEVO: Firebase Admin para notificaciones
+// ========================================
+const admin = require('firebase-admin');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +55,31 @@ async function connectMongoDB() {
 
 // Conectar al iniciar
 connectMongoDB();
+
+// ========================================
+// NUEVO: Firebase Admin para notificaciones push
+// ========================================
+function initializeFirebaseAdmin() {
+  try {
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.PROPERTY_ID || 'turisteando-app',
+          clientEmail: process.env.SERVICE_ACCOUNT_EMAIL,
+          privateKey: process.env.SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        }),
+      });
+      console.log('✅ Firebase Admin inicializado para notificaciones');
+    }
+    return true;
+  } catch (error) {
+    console.error('❌ Error inicializando Firebase Admin:', error.message);
+    return false;
+  }
+}
+
+// Inicializar después de conectar MongoDB
+initializeFirebaseAdmin();
 
 // ========================================
 // HELPER FUNCTIONS
@@ -180,7 +209,8 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     propertyId: PROPERTY_ID,
     mongodb: mongoDb ? 'connected' : 'disconnected',
-    version: '3.2.0-intelligent'
+    firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
+    version: '4.0.0-notifications'
   });
 });
 
@@ -1811,13 +1841,771 @@ app.get('/api/mongodb/debug/corrections', async (req, res) => {
 });
 
 // ========================================
+// ========================================
+// NUEVO: NOTIFICACIONES PUSH - ENDPOINTS
+// ========================================
+// ========================================
+
+/**
+ * Registrar token de dispositivo
+ * POST /api/notifications/register
+ */
+app.post('/api/notifications/register', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { token, user_id, pueblo_preferido, categorias_interes } = req.body;
+    
+    if (!token) {
+      return res.json({ success: false, error: 'token es requerido' });
+    }
+    
+    const deviceData = {
+      token,
+      user_id: user_id || null,
+      pueblo_preferido: pueblo_preferido || null,
+      categorias_interes: categorias_interes || [],
+      ultima_actividad: new Date().toISOString().split('T')[0],
+      updated_at: new Date()
+    };
+    
+    // Upsert: actualizar si existe, crear si no
+    await mongoDb.collection('device_tokens').updateOne(
+      { token },
+      { $set: deviceData, $setOnInsert: { created_at: new Date() } },
+      { upsert: true }
+    );
+    
+    res.json({ success: true, message: 'Token registrado correctamente' });
+    
+  } catch (error) {
+    console.error('Error registrando token:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener datos dinámicos para el panel (pueblos, categorías, entidades)
+ * GET /api/notifications/dynamic-data
+ */
+app.get('/api/notifications/dynamic-data', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { days = 30 } = req.query;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+    
+    // Obtener pueblos únicos
+    const pueblos = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate } } },
+      { $project: { pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] } } },
+      { $match: { pueblo: { $ne: null, $ne: '' } } },
+      { $group: { _id: '$pueblo', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+    
+    // Obtener categorías únicas
+    const categorias = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate } } },
+      { $project: { categoria: { $ifNull: ['$data.category_name', '$data.category_id'] } } },
+      { $match: { categoria: { $ne: null, $ne: '' } } },
+      { $group: { _id: '$categoria', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+    
+    // Obtener entidades únicas con su información
+    const entidades = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate }, event_name: { $in: ['entity_clicked', 'entity_detail_view'] } } },
+      { $project: { 
+        entidad: '$data.entity_name', 
+        categoria: { $ifNull: ['$data.category_name', '$data.category_id'] },
+        pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }
+      }},
+      { $match: { entidad: { $ne: null, $ne: '' } } },
+      { $group: { _id: { entidad: '$entidad', categoria: '$categoria', pueblo: '$pueblo' }, count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 100 }
+    ]).toArray();
+    
+    // Formatear entidades
+    const entidadesFormateadas = entidades.map(e => ({
+      nombre: e._id.entidad,
+      categoria: e._id.categoria,
+      pueblo: e._id.pueblo,
+      eventos: e.count
+    }));
+    
+    res.json({
+      success: true,
+      data: {
+        pueblos: pueblos.map(p => ({ nombre: p._id, eventos: p.count })),
+        categorias: categorias.map(c => ({ nombre: c._id, eventos: c.count })),
+        entidades: entidadesFormateadas
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error obteniendo datos dinámicos:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Enviar notificación
+ * POST /api/notifications/send
+ */
+app.post('/api/notifications/send', async (req, res) => {
+  try {
+    if (!admin.apps.length) {
+      return res.json({ success: false, error: 'Firebase Admin no está inicializado' });
+    }
+    
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { 
+      title, 
+      body, 
+      image,
+      target_type,  // 'all', 'pueblo', 'categoria', 'tokens'
+      target_value, // pueblo_nombre, categoria_nombre, o array de tokens
+      action_type,  // 'open_home', 'open_entity', 'open_pueblo', 'open_category', 'open_url'
+      action_data   // { entity_id, entity_name, ... } o { url }
+    } = req.body;
+    
+    if (!title || !body) {
+      return res.json({ success: false, error: 'title y body son requeridos' });
+    }
+    
+    // Obtener tokens según el target
+    let tokens = [];
+    
+    if (target_type === 'all') {
+      const devices = await mongoDb.collection('device_tokens').find({}).toArray();
+      tokens = devices.map(d => d.token);
+    } else if (target_type === 'pueblo') {
+      const devices = await mongoDb.collection('device_tokens').find({ 
+        $or: [
+          { pueblo_preferido: target_value },
+          { pueblo_preferido: target_value?.toLowerCase() },
+          { pueblo_preferido: target_value?.toUpperCase() }
+        ]
+      }).toArray();
+      tokens = devices.map(d => d.token);
+    } else if (target_type === 'categoria') {
+      const devices = await mongoDb.collection('device_tokens').find({ 
+        categorias_interes: { $in: [target_value, target_value?.toLowerCase()] }
+      }).toArray();
+      tokens = devices.map(d => d.token);
+    } else if (target_type === 'tokens' && Array.isArray(target_value)) {
+      tokens = target_value;
+    }
+    
+    if (tokens.length === 0) {
+      return res.json({ success: false, error: 'No hay dispositivos registrados para enviar' });
+    }
+    
+    // Construir mensaje
+    const message = {
+      notification: {
+        title,
+        body,
+        ...(image && { image })
+      },
+      data: {
+        action: action_type || 'open_home',
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        ...action_data
+      },
+      tokens: tokens
+    };
+    
+    // Enviar notificación
+    const response = await admin.messaging().sendEachForMulticast(message);
+    
+    // Guardar en historial
+    const historyRecord = {
+      titulo: title,
+      mensaje: body,
+      imagen: image || null,
+      target_tipo: target_type,
+      target_valor: target_value || null,
+      action_tipo: action_type || 'open_home',
+      action_datos: action_data || {},
+      tokens_enviados: tokens.length,
+      enviados_exitosos: response.successCount,
+      enviados_fallidos: response.failureCount,
+      fecha_envio: new Date(),
+      responses: response.responses
+    };
+    
+    await mongoDb.collection('notifications_history').insertOne(historyRecord);
+    
+    // Limpiar tokens inválidos
+    if (response.failureCount > 0) {
+      const invalidTokens = [];
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success && resp.error?.code === 'messaging/invalid-registration-token') {
+          invalidTokens.push(tokens[idx]);
+        }
+      });
+      
+      if (invalidTokens.length > 0) {
+        await mongoDb.collection('device_tokens').deleteMany({ token: { $in: invalidTokens } });
+        console.log(`🧹 Eliminados ${invalidTokens.length} tokens inválidos`);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Notificación enviada',
+      stats: {
+        total: tokens.length,
+        exitosos: response.successCount,
+        fallidos: response.failureCount
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error enviando notificación:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener historial de notificaciones
+ * GET /api/notifications/history
+ */
+app.get('/api/notifications/history', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { limit = 20 } = req.query;
+    
+    const history = await mongoDb.collection('notifications_history')
+      .find({})
+      .sort({ fecha_envio: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+    
+    res.json({ success: true, data: history });
+    
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener estadísticas de notificaciones
+ * GET /api/notifications/stats
+ */
+app.get('/api/notifications/stats', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const [totalDevices, totalNotifications, recentNotifications] = await Promise.all([
+      mongoDb.collection('device_tokens').countDocuments(),
+      mongoDb.collection('notifications_history').countDocuments(),
+      mongoDb.collection('notifications_history').aggregate([
+        { $match: { fecha_envio: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
+        { $group: { _id: null, totalEnviados: { $sum: '$tokens_enviados' }, totalExitosos: { $sum: '$enviados_exitosos' } } }
+      ]).toArray()
+    ]);
+    
+    const stats = recentNotifications[0] || { totalEnviados: 0, totalExitosos: 0 };
+    
+    res.json({
+      success: true,
+      data: {
+        dispositivosRegistrados: totalDevices,
+        notificacionesEnviadas: totalNotifications,
+        totalEnviados30Dias: stats.totalEnviados,
+        totalExitosos30Dias: stats.totalExitosos
+      }
+    });
+    
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Eliminar token de dispositivo
+ * DELETE /api/notifications/token/:token
+ */
+app.delete('/api/notifications/token/:token', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { token } = req.params;
+    
+    await mongoDb.collection('device_tokens').deleteOne({ token });
+    
+    res.json({ success: true, message: 'Token eliminado' });
+    
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// NUEVO: PANEL DE ADMINISTRACIÓN HTML
+// ========================================
+
+app.get('/admin', (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Notificaciones - Turisteando</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; color: #fff; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        
+        .header { text-align: center; padding: 30px 0; }
+        .header h1 { font-size: 28px; margin-bottom: 8px; }
+        .header p { color: #8892b0; }
+        
+        .card { background: rgba(255,255,255,0.05); border-radius: 16px; padding: 24px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1); }
+        .card h2 { font-size: 18px; margin-bottom: 20px; color: #64ffda; display: flex; align-items: center; gap: 10px; }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-box { background: rgba(100,255,218,0.1); border-radius: 12px; padding: 20px; text-align: center; }
+        .stat-box .number { font-size: 32px; font-weight: 700; color: #64ffda; }
+        .stat-box .label { font-size: 12px; color: #8892b0; margin-top: 5px; }
+        
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-size: 14px; color: #ccd6f6; }
+        .form-group input, .form-group textarea, .form-group select { 
+            width: 100%; padding: 12px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); 
+            background: rgba(255,255,255,0.05); color: #fff; font-size: 14px; font-family: inherit;
+        }
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus { 
+            outline: none; border-color: #64ffda; 
+        }
+        .form-group textarea { min-height: 80px; resize: vertical; }
+        
+        .radio-group { display: flex; flex-wrap: wrap; gap: 15px; }
+        .radio-item { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+        .radio-item input { width: 18px; height: 18px; }
+        
+        .select-group { margin-top: 15px; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; }
+        .select-group.hidden { display: none; }
+        
+        .btn { padding: 14px 28px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: all 0.3s; }
+        .btn-primary { background: #64ffda; color: #1a1a2e; }
+        .btn-primary:hover { background: #4cd9b4; transform: translateY(-2px); }
+        .btn-secondary { background: rgba(255,255,255,0.1); color: #fff; }
+        .btn-secondary:hover { background: rgba(255,255,255,0.2); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .actions { display: flex; gap: 15px; justify-content: flex-end; margin-top: 20px; }
+        
+        .history-table { width: 100%; border-collapse: collapse; }
+        .history-table th, .history-table td { padding: 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .history-table th { color: #64ffda; font-size: 12px; text-transform: uppercase; }
+        .history-table td { font-size: 14px; }
+        .history-table tr:hover { background: rgba(255,255,255,0.03); }
+        
+        .badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+        .badge-success { background: rgba(100,255,218,0.2); color: #64ffda; }
+        .badge-info { background: rgba(100,149,237,0.2); color: #6495ed; }
+        
+        .loading { text-align: center; padding: 40px; color: #8892b0; }
+        .toast { position: fixed; bottom: 20px; right: 20px; padding: 16px 24px; border-radius: 8px; font-size: 14px; z-index: 1000; animation: slideIn 0.3s; }
+        .toast-success { background: #64ffda; color: #1a1a2e; }
+        .toast-error { background: #ff6b6b; color: #fff; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        
+        .tab-buttons { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab-btn { padding: 10px 20px; border-radius: 8px; background: rgba(255,255,255,0.05); color: #8892b0; border: none; cursor: pointer; font-size: 14px; }
+        .tab-btn.active { background: #64ffda; color: #1a1a2e; }
+        
+        @media (max-width: 600px) {
+            .container { padding: 15px; }
+            .header h1 { font-size: 22px; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔔 Panel de Notificaciones</h1>
+            <p>Gestiona las notificaciones push de TuristeandoAPP</p>
+        </div>
+        
+        <!-- Estadísticas -->
+        <div class="card">
+            <h2>📊 Estadísticas</h2>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="number" id="stat-devices">-</div>
+                    <div class="label">Dispositivos</div>
+                </div>
+                <div class="stat-box">
+                    <div class="number" id="stat-sent">-</div>
+                    <div class="label">Enviadas</div>
+                </div>
+                <div class="stat-box">
+                    <div class="number" id="stat-monthly">-</div>
+                    <div class="label">Este mes</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Tabs -->
+        <div class="tab-buttons">
+            <button class="tab-btn active" onclick="showTab('send')">📤 Enviar</button>
+            <button class="tab-btn" onclick="showTab('history')">📋 Historial</button>
+        </div>
+        
+        <!-- Formulario de envío -->
+        <div class="card" id="tab-send">
+            <h2>📝 Crear Notificación</h2>
+            
+            <div class="form-group">
+                <label>Título *</label>
+                <input type="text" id="title" placeholder="Ej: Nuevo evento en Villa de Leyva">
+            </div>
+            
+            <div class="form-group">
+                <label>Mensaje *</label>
+                <textarea id="body" placeholder="Ej: No te pierdas el festival gastronómico este fin de semana"></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Imagen URL (opcional)</label>
+                <input type="text" id="image" placeholder="https://ejemplo.com/imagen.png">
+            </div>
+            
+            <div class="form-group">
+                <label>Enviar a</label>
+                <div class="radio-group">
+                    <label class="radio-item">
+                        <input type="radio" name="target" value="all" checked onchange="updateTargetFields()">
+                        Todos los usuarios
+                    </label>
+                    <label class="radio-item">
+                        <input type="radio" name="target" value="pueblo" onchange="updateTargetFields()">
+                        Por pueblo
+                    </label>
+                    <label class="radio-item">
+                        <input type="radio" name="target" value="categoria" onchange="updateTargetFields()">
+                        Por categoría
+                    </label>
+                </div>
+            </div>
+            
+            <div id="target-pueblo" class="select-group hidden">
+                <label>Pueblo</label>
+                <select id="select-pueblo"><option value="">Cargando pueblos...</option></select>
+            </div>
+            
+            <div id="target-categoria" class="select-group hidden">
+                <label>Categoría</label>
+                <select id="select-categoria"><option value="">Cargando categorías...</option></select>
+            </div>
+            
+            <div class="form-group">
+                <label>Al tocar la notificación</label>
+                <div class="radio-group">
+                    <label class="radio-item">
+                        <input type="radio" name="action" value="open_home" checked onchange="updateActionFields()">
+                        Pantalla principal
+                    </label>
+                    <label class="radio-item">
+                        <input type="radio" name="action" value="open_entity" onchange="updateActionFields()">
+                        Entidad específica
+                    </label>
+                    <label class="radio-item">
+                        <input type="radio" name="action" value="open_pueblo" onchange="updateActionFields()">
+                        Un pueblo
+                    </label>
+                    <label class="radio-item">
+                        <input type="radio" name="action" value="open_url" onchange="updateActionFields()">
+                        URL externa
+                    </label>
+                </div>
+            </div>
+            
+            <div id="action-entity" class="select-group hidden">
+                <label>Entidad</label>
+                <select id="select-entity"><option value="">Cargando entidades...</option></select>
+            </div>
+            
+            <div id="action-pueblo" class="select-group hidden">
+                <label>Pueblo</label>
+                <select id="select-action-pueblo"><option value="">Cargando pueblos...</option></select>
+            </div>
+            
+            <div id="action-url" class="select-group hidden">
+                <label>URL</label>
+                <input type="text" id="action-url-input" placeholder="https://ejemplo.com/pagina">
+            </div>
+            
+            <div class="actions">
+                <button class="btn btn-secondary" onclick="clearForm()">Limpiar</button>
+                <button class="btn btn-primary" id="btn-send" onclick="sendNotification()">📤 Enviar Notificación</button>
+            </div>
+        </div>
+        
+        <!-- Historial -->
+        <div class="card hidden" id="tab-history">
+            <h2>📋 Historial de Notificaciones</h2>
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Fecha</th>
+                        <th>Título</th>
+                        <th>Destino</th>
+                        <th>Enviados</th>
+                        <th>Estado</th>
+                    </tr>
+                </thead>
+                <tbody id="history-body">
+                    <tr><td colspan="5" class="loading">Cargando historial...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        // Variables globales
+        let dynamicData = { pueblos: [], categorias: [], entidades: [] };
+        const API_BASE = window.location.origin;
+        
+        // Cargar datos al iniciar
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStats();
+            loadDynamicData();
+            loadHistory();
+        });
+        
+        // Cargar estadísticas
+        async function loadStats() {
+            try {
+                const res = await fetch(API_BASE + '/api/notifications/stats');
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('stat-devices').textContent = data.data.dispositivosRegistrados;
+                    document.getElementById('stat-sent').textContent = data.data.notificacionesEnviadas;
+                    document.getElementById('stat-monthly').textContent = data.data.totalExitosos30Dias;
+                }
+            } catch (e) {
+                console.error('Error cargando stats:', e);
+            }
+        }
+        
+        // Cargar datos dinámicos (pueblos, categorías, entidades)
+        async function loadDynamicData() {
+            try {
+                const res = await fetch(API_BASE + '/api/notifications/dynamic-data?days=30');
+                const data = await res.json();
+                if (data.success) {
+                    dynamicData = data.data;
+                    
+                    // Poblar select de pueblos
+                    const puebloSelect = document.getElementById('select-pueblo');
+                    puebloSelect.innerHTML = '<option value="">Selecciona un pueblo</option>' +
+                        dynamicData.pueblos.map(p => '<option value="' + p.nombre + '">' + p.nombre + '</option>').join('');
+                    
+                    // Poblar select de categorías
+                    const categoriaSelect = document.getElementById('select-categoria');
+                    categoriaSelect.innerHTML = '<option value="">Selecciona una categoría</option>' +
+                        dynamicData.categorias.map(c => '<option value="' + c.nombre + '">' + c.nombre + '</option>').join('');
+                    
+                    // Poblar select de entidades
+                    const entitySelect = document.getElementById('select-entity');
+                    entitySelect.innerHTML = '<option value="">Selecciona una entidad</option>' +
+                        dynamicData.entidades.map(e => '<option value="' + e.nombre + '" data-categoria="' + e.categoria + '" data-pueblo="' + e.pueblo + '">' + e.nombre + '</option>').join('');
+                    
+                    // Poblar select de pueblos para acción
+                    const actionPuebloSelect = document.getElementById('select-action-pueblo');
+                    actionPuebloSelect.innerHTML = '<option value="">Selecciona un pueblo</option>' +
+                        dynamicData.pueblos.map(p => '<option value="' + p.nombre + '">' + p.nombre + '</option>').join('');
+                }
+            } catch (e) {
+                console.error('Error cargando datos dinámicos:', e);
+            }
+        }
+        
+        // Cargar historial
+        async function loadHistory() {
+            try {
+                const res = await fetch(API_BASE + '/api/notifications/history?limit=20');
+                const data = await res.json();
+                const tbody = document.getElementById('history-body');
+                
+                if (data.success && data.data.length > 0) {
+                    tbody.innerHTML = data.data.map(n => {
+                        const fecha = new Date(n.fecha_envio).toLocaleDateString('es-ES');
+                        const destino = n.target_tipo === 'all' ? 'Todos' : (n.target_valor || n.target_tipo);
+                        return '<tr>' +
+                            '<td>' + fecha + '</td>' +
+                            '<td>' + n.titulo.substring(0, 30) + (n.titulo.length > 30 ? '...' : '') + '</td>' +
+                            '<td>' + destino + '</td>' +
+                            '<td>' + n.enviados_exitosos + '/' + n.tokens_enviados + '</td>' +
+                            '<td><span class="badge badge-success">Enviado</span></td>' +
+                        '</tr>';
+                    }).join('');
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8892b0;">No hay notificaciones enviadas</td></tr>';
+                }
+            } catch (e) {
+                console.error('Error cargando historial:', e);
+            }
+        }
+        
+        // Mostrar/ocultar campos según selección
+        function updateTargetFields() {
+            const target = document.querySelector('input[name="target"]:checked').value;
+            document.getElementById('target-pueblo').classList.toggle('hidden', target !== 'pueblo');
+            document.getElementById('target-categoria').classList.toggle('hidden', target !== 'categoria');
+        }
+        
+        function updateActionFields() {
+            const action = document.querySelector('input[name="action"]:checked').value;
+            document.getElementById('action-entity').classList.toggle('hidden', action !== 'open_entity');
+            document.getElementById('action-pueblo').classList.toggle('hidden', action !== 'open_pueblo');
+            document.getElementById('action-url').classList.toggle('hidden', action !== 'open_url');
+        }
+        
+        // Cambiar tabs
+        function showTab(tab) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('tab-send').classList.toggle('hidden', tab !== 'send');
+            document.getElementById('tab-history').classList.toggle('hidden', tab !== 'history');
+            if (tab === 'history') loadHistory();
+        }
+        
+        // Enviar notificación
+        async function sendNotification() {
+            const title = document.getElementById('title').value.trim();
+            const body = document.getElementById('body').value.trim();
+            const image = document.getElementById('image').value.trim();
+            const targetType = document.querySelector('input[name="target"]:checked').value;
+            const actionType = document.querySelector('input[name="action"]:checked').value;
+            
+            if (!title || !body) {
+                showToast('Por favor completa el título y mensaje', 'error');
+                return;
+            }
+            
+            let targetValue = null;
+            if (targetType === 'pueblo') {
+                targetValue = document.getElementById('select-pueblo').value;
+                if (!targetValue) { showToast('Selecciona un pueblo', 'error'); return; }
+            } else if (targetType === 'categoria') {
+                targetValue = document.getElementById('select-categoria').value;
+                if (!targetValue) { showToast('Selecciona una categoría', 'error'); return; }
+            }
+            
+            let actionData = {};
+            if (actionType === 'open_entity') {
+                const entitySelect = document.getElementById('select-entity');
+                const selectedOption = entitySelect.options[entitySelect.selectedIndex];
+                if (!entitySelect.value) { showToast('Selecciona una entidad', 'error'); return; }
+                actionData = {
+                    entity_name: entitySelect.value,
+                    category: selectedOption.dataset.categoria || '',
+                    pueblo_id: selectedOption.dataset.pueblo || ''
+                };
+            } else if (actionType === 'open_pueblo') {
+                const puebloSelect = document.getElementById('select-action-pueblo');
+                if (!puebloSelect.value) { showToast('Selecciona un pueblo', 'error'); return; }
+                actionData = { pueblo_id: puebloSelect.value };
+            } else if (actionType === 'open_url') {
+                const url = document.getElementById('action-url-input').value.trim();
+                if (!url) { showToast('Ingresa una URL', 'error'); return; }
+                actionData = { url };
+            }
+            
+            const btn = document.getElementById('btn-send');
+            btn.disabled = true;
+            btn.textContent = '⏳ Enviando...';
+            
+            try {
+                const res = await fetch(API_BASE + '/api/notifications/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title, body, image: image || null,
+                        target_type: targetType,
+                        target_value: targetValue,
+                        action_type: actionType,
+                        action_data: actionData
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    showToast('✅ Notificación enviada a ' + data.stats.exitosos + ' dispositivos', 'success');
+                    clearForm();
+                    loadStats();
+                    loadHistory();
+                } else {
+                    showToast('Error: ' + data.error, 'error');
+                }
+            } catch (e) {
+                showToast('Error de conexión', 'error');
+            }
+            
+            btn.disabled = false;
+            btn.textContent = '📤 Enviar Notificación';
+        }
+        
+        // Limpiar formulario
+        function clearForm() {
+            document.getElementById('title').value = '';
+            document.getElementById('body').value = '';
+            document.getElementById('image').value = '';
+            document.querySelector('input[name="target"][value="all"]').checked = true;
+            document.querySelector('input[name="action"][value="open_home"]').checked = true;
+            updateTargetFields();
+            updateActionFields();
+        }
+        
+        // Mostrar toast
+        function showToast(message, type) {
+            const toast = document.createElement('div');
+            toast.className = 'toast toast-' + type;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 4000);
+        }
+    </script>
+</body>
+</html>
+  `);
+});
+
+// ========================================
 // INICIAR SERVIDOR
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v3.2 (Intelligent) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v4.0 (Notifications) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
-  console.log(`🧠 Modo Inteligente: Activado (voto mayoritario)`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
+  console.log(`🖥️ Panel Admin: http://localhost:${PORT}/admin`);
 });
