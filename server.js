@@ -98,113 +98,65 @@ function extractMetric(row, index, defaultValue = 0) {
 }
 
 // ========================================
-// 🧠 FUNCIÓN INTELIGENTE: MAJORITY VOTE
+// 🧠 NUEVA FUNCIÓN: MAJORITY VOTE
 // ========================================
 
 /**
  * Calcula la categoría correcta para cada entidad usando MAJORITY VOTE.
- * 
- * Esta función analiza todos los eventos y determina a qué categoría
- * pertenece cada entidad basándose en la categoría donde tiene MÁS eventos.
- * 
- * EJEMPLO:
- * - "La Guaca Café Restaurante" tiene:
- *   - 19 eventos con category_name="restaurantes" ✅
- *   - 1 evento con category_name="alcaldia" ❌ (error de datos antiguos)
- * - Resultado: Se asigna a "restaurantes" (la mayoría gana)
- * 
- * @param {Array} events - Todos los eventos de MongoDB
- * @returns {Map} - Mapa con la categoría correcta de cada entidad
+ * Cuenta en qué categoría tiene más eventos cada entidad.
  */
-function calculateCorrectCategories(events) {
-  const entityCategories = new Map();
+function calcularCategoriaMayoritaria(events) {
+  const entidadesCategorias = new Map();
 
   events.forEach(event => {
-    // Obtener datos del evento
     const entityName = event.data?.entity_name || event.data?.lugar_nombre;
     const puebloId = event.data?.pueblo_id || event.data?.pueblo_nombre || 'desconocido';
-    const categoryName = event.data?.category_name || event.data?.category_id || 'Sin Categoría';
+    const categoryName = event.data?.category_name || event.data?.category_id || 'sin_categoria';
 
     if (!entityName) return;
 
-    // Clave única: pueblo + entidad (en minúsculas para normalizar)
     const entityKey = `${puebloId}_${entityName}`.toLowerCase();
 
-    // Inicializar si no existe
-    if (!entityCategories.has(entityKey)) {
-      entityCategories.set(entityKey, {
+    if (!entidadesCategorias.has(entityKey)) {
+      entidadesCategorias.set(entityKey, {
         entityName: entityName,
         puebloId: puebloId,
-        puebloName: normalizePuebloName(puebloId),
-        categories: new Map() // categoryName -> count
+        categories: new Map()
       });
     }
 
-    // Contar eventos por categoría
-    const entity = entityCategories.get(entityKey);
-    const normalizedCategory = categoryName.toLowerCase().trim();
-    const count = entity.categories.get(normalizedCategory) || 0;
-    entity.categories.set(normalizedCategory, count + 1);
+    const entity = entidadesCategorias.get(entityKey);
+    const catNorm = categoryName.toLowerCase().trim();
+    const count = entity.categories.get(catNorm) || 0;
+    entity.categories.set(catNorm, count + 1);
   });
 
-  // Calcular la categoría mayoritaria para cada entidad
-  const result = new Map();
-  entityCategories.forEach((entity, key) => {
+  // Determinar la categoría con más eventos para cada entidad
+  const resultado = new Map();
+  entidadesCategorias.forEach((entity, key) => {
     let maxCount = 0;
     let correctCategory = 'sin_categoria';
 
-    // Encontrar la categoría con más eventos
-    entity.categories.forEach((count, categoryName) => {
+    entity.categories.forEach((count, catName) => {
       if (count > maxCount) {
         maxCount = count;
-        correctCategory = categoryName;
+        correctCategory = catName;
       }
     });
 
-    // Calcular total de eventos
     const totalEvents = Array.from(entity.categories.values()).reduce((a, b) => a + b, 0);
 
-    result.set(key, {
+    resultado.set(key, {
       entityName: entity.entityName,
       puebloId: entity.puebloId,
-      puebloName: entity.puebloName,
       correctCategory: correctCategory,
       totalEvents: totalEvents,
       categoriesBreakdown: Object.fromEntries(entity.categories),
-      hadMultipleCategories: entity.categories.size > 1
+      tuvoMultiplesCategorias: entity.categories.size > 1
     });
   });
 
-  return result;
-}
-
-/**
- * Normaliza nombres de pueblos para consistencia
- */
-const PUEBLO_NAMES = {
-  'raquira': 'Ráquira',
-  'Raquira': 'Ráquira',
-  'Ráquira': 'Ráquira',
-  'RAQUIRA': 'Ráquira',
-  'mongui': 'Monguí',
-  'Mongui': 'Monguí',
-  'Monguí': 'Monguí',
-  'MONGUI': 'Monguí',
-  'tibasosa': 'Tibasosa',
-  'Tibasosa': 'Tibasosa',
-  'TIBASOSA': 'Tibasosa',
-  'nobsa': 'Nobsa',
-  'Nobsa': 'Nobsa',
-  'NOBSA': 'Nobsa',
-  'villa de leyva': 'Villa de Leyva',
-  'villa_de_leyva': 'Villa de Leyva'
-};
-
-function normalizePuebloName(puebloId) {
-  if (!puebloId) return 'Desconocido';
-  const normalized = puebloId.toString().toLowerCase().trim();
-  return PUEBLO_NAMES[normalized] || PUEBLO_NAMES[puebloId] || 
-         (puebloId.charAt(0).toUpperCase() + puebloId.slice(1).toLowerCase());
+  return resultado;
 }
 
 // ========================================
@@ -226,7 +178,7 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     propertyId: PROPERTY_ID,
     mongodb: mongoDb ? 'connected' : 'disconnected',
-    version: '4.0.0-intelligent-majority-vote'
+    version: '4.0.0-intelligent'
   });
 });
 
@@ -1327,286 +1279,475 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
     
-    const { days = 30 } = req.query;
+    const { days = 7 } = req.query;
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
 
     // ========================================
-    // PASO 1: OBTENER TODOS LOS EVENTOS
+    // PASO 1: OBTENER TODOS LOS DATOS
     // ========================================
     
-    const events = await mongoDb.collection('events')
+    const [
+      totalEvents,
+      eventsByType,
+      pueblosViews,
+      categoriasData,
+      entidadesData,
+      accionesData,
+      eventsByDay
+    ] = await Promise.all([
+      mongoDb.collection('events').countDocuments({ server_time: { $gte: startDate } }),
+      
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate } } },
+        { $group: { _id: '$event_name', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 20 }
+      ]).toArray(),
+      
+      mongoDb.collection('events').aggregate([
+        { $match: { 
+          server_time: { $gte: startDate },
+          $or: [
+            { event_name: 'pueblo_view' },
+            { event_name: 'screen_view', 'data.screen_category': 'town' },
+            { event_name: 'abrir_mapa_pueblo' }
+          ]
+        }},
+        { $project: {
+          pueblo: { 
+            $toLower: { 
+              $ifNull: ['$data.pueblo_nombre', '$data.town_name', '$data.pueblo_id', '$data.screen_name'] 
+            }
+          }
+        }},
+        { $match: { pueblo: { $ne: null, $ne: '' } } },
+        { $group: { _id: '$pueblo', views: { $sum: 1 } } },
+        { $sort: { views: -1 } },
+        { $limit: 20 }
+      ]).toArray(),
+      
+      mongoDb.collection('events').aggregate([
+        { $match: { 
+          server_time: { $gte: startDate },
+          event_name: { $in: ['category_view', 'category_click'] }
+        }},
+        { $project: {
+          categoria: { $toLower: { $ifNull: ['$data.category_name', '$data.category_id'] } },
+          pueblo: { $toLower: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] } }
+        }},
+        { $match: { categoria: { $ne: null, $ne: '' } } },
+        { $group: { _id: { categoria: '$categoria', pueblo: '$pueblo' }, count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 30 }
+      ]).toArray(),
+      
+      mongoDb.collection('events').aggregate([
+        { $match: { 
+          server_time: { $gte: startDate },
+          event_name: { $in: ['entity_clicked', 'entity_detail_view'] }
+        }},
+        { $project: {
+          entidad: '$data.entity_name',
+          categoria: { $toLower: { $ifNull: ['$data.category_name', '$data.category_id'] } },
+          pueblo: { $toLower: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] } }
+        }},
+        { $match: { entidad: { $ne: null, $ne: '' } } },
+        { $group: { _id: { entidad: '$entidad', categoria: '$categoria', pueblo: '$pueblo' }, clicks: { $sum: 1 } } },
+        { $sort: { clicks: -1 } },
+        { $limit: 50 }
+      ]).toArray(),
+      
+      mongoDb.collection('events').aggregate([
+        { $match: { 
+          server_time: { $gte: startDate },
+          event_name: { $in: ['entity_action', 'abrir_mapa', 'abrir_informacion', 'social_network_open', 'whatsapp_open', 'phone_call', 'share'] }
+        }},
+        { $project: {
+          action: {
+            $switch: {
+              branches: [
+                { case: { $eq: ['$event_name', 'abrir_mapa'] }, then: 'abrir_mapa' },
+                { case: { $eq: ['$event_name', 'abrir_informacion'] }, then: 'abrir_web' },
+                { case: { $eq: ['$event_name', 'social_network_open'] }, then: { $concat: ['ver_', { $toLower: '$data.network' }] } },
+                { case: { $eq: ['$event_name', 'whatsapp_open'] }, then: 'whatsapp' },
+                { case: { $eq: ['$event_name', 'phone_call'] }, then: 'llamar' },
+                { case: { $eq: ['$event_name', 'share'] }, then: 'compartir' }
+              ],
+              default: { $toLower: '$data.action' }
+            }
+          },
+          entity: '$data.entity_name',
+          categoria: { $toLower: { $ifNull: ['$data.category_name', '$data.category_id'] } },
+          pueblo: { $toLower: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id', '$data.origen'] } }
+        }},
+        { $match: { action: { $ne: null, $ne: '' }, entity: { $ne: null, $ne: '' } } },
+        { $group: { _id: { action: '$action', entity: '$entity', categoria: '$categoria', pueblo: '$pueblo' }, count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 100 }
+      ]).toArray(),
+      
+      mongoDb.collection('events').aggregate([
+        { $match: { server_time: { $gte: startDate } } },
+        { $group: { _id: '$date', count: { $sum: 1 }, devices: { $addToSet: '$data.device_model' } } },
+        { $project: { _id: 0, date: '$_id', count: 1, devices: { $size: '$devices' } } },
+        { $sort: { date: 1 } }
+      ]).toArray()
+    ]);
+
+    // ========================================
+    // 🧠 PASO 2: CALCULAR CATEGORÍAS CORRECTAS (MAJORITY VOTE)
+    // ========================================
+    
+    // Obtener TODOS los eventos para majority vote
+    const todosEventos = await mongoDb.collection('events')
       .find({ server_time: { $gte: startDate } })
-      .sort({ timestamp: -1 })
       .toArray();
-
-    // ========================================
-    // PASO 2: 🧠 APLICAR MAJORITY VOTE
-    // ========================================
     
-    const correctCategories = calculateCorrectCategories(events);
+    const categoriasCorrectas = calcularCategoriaMayoritaria(todosEventos);
 
     // ========================================
-    // PASO 3: CONSTRUIR ESTRUCTURA JERÁRQUICA
+    // PASO 3: CONSTRUIR ESTRUCTURA JERÁRQUICA (USANDO CATEGORÍA CORRECTA)
     // ========================================
     
     const pueblosMap = new Map();
-    const statsByCategory = {};
-    const statsByEventType = {};
-    let totalCorrections = 0;
-
-    // Procesar cada evento usando la categoría CORRECTA
-    events.forEach(event => {
-      const eventName = event.event_name;
-      const entityName = event.data?.entity_name || event.data?.lugar_nombre;
-      const puebloId = event.data?.pueblo_id || event.data?.pueblo_nombre || event.data?.origen || 'desconocido';
-      
-      // Contar eventos por tipo
-      statsByEventType[eventName] = (statsByEventType[eventName] || 0) + 1;
-
-      if (!entityName) return;
-
-      // Obtener la categoría CORRECTA de esta entidad (majority vote)
-      const entityKey = `${puebloId}_${entityName}`.toLowerCase();
-      const entityInfo = correctCategories.get(entityKey);
-      
-      if (!entityInfo) return;
-
-      const correctCategory = entityInfo.correctCategory;
-      const puebloName = entityInfo.puebloName;
-
-      // Contar correcciones
-      if (entityInfo.hadMultipleCategories) {
-        totalCorrections++;
+    
+    const normalizePueblo = (nombre) => {
+      if (!nombre) return 'sin_pueblo';
+      const normalized = nombre.toString().toLowerCase().trim();
+      const mappings = {
+        'villa de leyva': 'villa_de_leyva',
+        'villa_de_leyva': 'villa_de_leyva',
+        'raquira': 'raquira',
+        'ráquira': 'raquira',
+        'tinjaca': 'tinjaca',
+        'tinjacá': 'tinjaca',
+        'sutamarchan': 'sutamarchan',
+        'sutamarchán': 'sutamarchan',
+        'susa': 'susa',
+        'briceño': 'briceno',
+        'briceno': 'briceno'
+      };
+      return mappings[normalized] || normalized.replace(/\s+/g, '_');
+    };
+    
+    const formatPuebloName = (normalized) => {
+      const displayNames = {
+        'raquira': 'Ráquira',
+        'tinjaca': 'Tinjacá',
+        'sutamarchan': 'Sutamarchán',
+        'villa_de_leyva': 'Villa de Leyva',
+        'susa': 'Susa',
+        'briceno': 'Briceño',
+        'sin_pueblo': 'Sin Pueblo'
+      };
+      return displayNames[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1).replace(/_/g, ' ');
+    };
+    
+    // Inicializar pueblos desde vistas
+    pueblosViews.forEach(p => {
+      if (p._id) {
+        const puebloKey = normalizePueblo(p._id);
+        if (!pueblosMap.has(puebloKey)) {
+          pueblosMap.set(puebloKey, {
+            nombre: puebloKey,
+            displayName: formatPuebloName(puebloKey),
+            vistas: p.views,
+            categorias: new Map(),
+            entidades: new Map()
+          });
+        } else {
+          pueblosMap.get(puebloKey).vistas += p.views;
+        }
       }
-
-      // Inicializar stats por categoría
-      if (!statsByCategory[correctCategory]) {
-        statsByCategory[correctCategory] = { name: correctCategory, totalEntities: new Set(), totalEvents: 0 };
-      }
-      statsByCategory[correctCategory].totalEntities.add(entityName);
-      statsByCategory[correctCategory].totalEvents++;
-
-      // Inicializar pueblo si no existe
-      const puebloKey = puebloName.toLowerCase();
+    });
+    
+    // Agregar categorías a pueblos
+    categoriasData.forEach(c => {
+      const puebloKey = normalizePueblo(c._id.pueblo);
+      const categoriaNombre = c._id.categoria || 'sin_categoria';
+      
       if (!pueblosMap.has(puebloKey)) {
         pueblosMap.set(puebloKey, {
-          nombre: puebloName,
+          nombre: puebloKey,
+          displayName: formatPuebloName(puebloKey),
           vistas: 0,
           categorias: new Map(),
           entidades: new Map()
         });
       }
-
+      
       const pueblo = pueblosMap.get(puebloKey);
-
-      // Incrementar vistas del pueblo
-      if (eventName === 'pueblo_view' || eventName === 'screen_view') {
-        pueblo.vistas++;
-      }
-
-      // Inicializar categoría si no existe
-      if (!pueblo.categorias.has(correctCategory)) {
-        pueblo.categorias.set(correctCategory, {
-          nombre: correctCategory,
+      
+      if (!pueblo.categorias.has(categoriaNombre)) {
+        pueblo.categorias.set(categoriaNombre, {
+          nombre: categoriaNombre,
           vistas: 0,
           entidades: new Map()
         });
       }
-
-      const categoria = pueblo.categorias.get(correctCategory);
-      categoria.vistas++;
-
-      // Agregar/actualizar entidad en la categoría CORRECTA
-      if (!categoria.entidades.has(entityName)) {
-        categoria.entidades.set(entityName, {
-          nombre: entityName,
+      pueblo.categorias.get(categoriaNombre).vistas += c.count;
+    });
+    
+    // 🧠 Agregar entidades usando CATEGORÍA CORRECTA (majority vote)
+    entidadesData.forEach(e => {
+      const puebloKey = normalizePueblo(e._id.pueblo);
+      const entidadNombre = e._id.entidad;
+      
+      if (!entidadNombre) return;
+      
+      // 🧠 OBTENER CATEGORÍA CORRECTA (majority vote)
+      const entityKey = `${e._id.pueblo}_${entidadNombre}`.toLowerCase();
+      const entityInfo = categoriasCorrectas.get(entityKey);
+      const categoriaCorrecta = entityInfo ? entityInfo.correctCategory : (e._id.categoria || 'sin_categoria');
+      
+      if (!pueblosMap.has(puebloKey)) {
+        pueblosMap.set(puebloKey, {
+          nombre: puebloKey,
+          displayName: formatPuebloName(puebloKey),
+          vistas: 0,
+          categorias: new Map(),
+          entidades: new Map()
+        });
+      }
+      
+      const pueblo = pueblosMap.get(puebloKey);
+      
+      // Usar clave única con categoría CORRECTA
+      const entidadKey = `${entidadNombre}|${categoriaCorrecta}`;
+      
+      if (!pueblo.entidades.has(entidadKey)) {
+        pueblo.entidades.set(entidadKey, {
+          nombre: entidadNombre,
+          categoria: categoriaCorrecta,
           clicks: 0,
           acciones: []
         });
       }
-
-      const entidad = categoria.entidades.get(entityName);
+      pueblo.entidades.get(entidadKey).clicks += e.clicks;
       
-      // Contar clicks/vistas
-      if (['entity_clicked', 'entity_detail_view'].includes(eventName)) {
-        entidad.clicks++;
+      // Agregar a la categoría CORRECTA
+      if (!pueblo.categorias.has(categoriaCorrecta)) {
+        pueblo.categorias.set(categoriaCorrecta, {
+          nombre: categoriaCorrecta,
+          vistas: 0,
+          entidades: new Map()
+        });
       }
-
-      // Agregar acciones
-      if (eventName === 'entity_action' || eventName.includes('abrir_') || eventName.includes('_open')) {
-        const actionName = event.data?.action || eventName;
-        const existingAction = entidad.acciones.find(a => a.accion === actionName);
-        if (existingAction) {
-          existingAction.count++;
-        } else {
-          entidad.acciones.push({ accion: actionName, count: 1 });
+      
+      const categoria = pueblo.categorias.get(categoriaCorrecta);
+      if (!categoria.entidades.has(entidadKey)) {
+        categoria.entidades.set(entidadKey, {
+          nombre: entidadNombre,
+          clicks: 0,
+          acciones: []
+        });
+      }
+      categoria.entidades.get(entidadKey).clicks += e.clicks;
+    });
+    
+    // 🧠 Agregar acciones usando CATEGORÍA CORRECTA
+    accionesData.forEach(a => {
+      const puebloKey = normalizePueblo(a._id.pueblo);
+      const entidadNombre = a._id.entity;
+      const actionName = a._id.action;
+      
+      if (!entidadNombre || !actionName) return;
+      
+      // 🧠 OBTENER CATEGORÍA CORRECTA
+      const entityKey = `${a._id.pueblo}_${entidadNombre}`.toLowerCase();
+      const entityInfo = categoriasCorrectas.get(entityKey);
+      const categoriaCorrecta = entityInfo ? entityInfo.correctCategory : (a._id.categoria || 'sin_categoria');
+      
+      if (pueblosMap.has(puebloKey)) {
+        const pueblo = pueblosMap.get(puebloKey);
+        const entidadKey = `${entidadNombre}|${categoriaCorrecta}`;
+        
+        if (pueblo.entidades.has(entidadKey)) {
+          const entidad = pueblo.entidades.get(entidadKey);
+          const accionExistente = entidad.acciones.find(acc => acc.accion === actionName);
+          if (accionExistente) {
+            accionExistente.count += a.count;
+          } else {
+            entidad.acciones.push({ accion: actionName, count: a.count });
+          }
+        }
+        
+        if (pueblo.categorias.has(categoriaCorrecta)) {
+          const categoria = pueblo.categorias.get(categoriaCorrecta);
+          if (categoria.entidades.has(entidadKey)) {
+            const entidad = categoria.entidades.get(entidadKey);
+            const accionExistente = entidad.acciones.find(acc => acc.accion === actionName);
+            if (accionExistente) {
+              accionExistente.count += a.count;
+            } else {
+              entidad.acciones.push({ accion: actionName, count: a.count });
+            }
+          }
         }
       }
     });
-
+    
     // ========================================
-    // PASO 4: CONVERTIR MAPS A ARRAYS Y ORDENAR
+    // PASO 4: CONVERTIR MAPS A ARRAYS
     // ========================================
-
+    
     const pueblosJerarquico = Array.from(pueblosMap.values())
-      .filter(p => p.categorias.size > 0 || p.entidades.size > 0)
-      .map(pueblo => ({
-        nombre: pueblo.nombre,
-        vistas: pueblo.vistas,
-        categorias: Array.from(pueblo.categorias.values())
+      .filter(p => p.vistas > 0 || p.entidades.size > 0 || p.categorias.size > 0)
+      .map(p => ({
+        nombre: p.displayName,
+        id: p.nombre,
+        vistas: p.vistas,
+        categorias: Array.from(p.categorias.values())
+          .filter(c => c.vistas > 0 || c.entidades.size > 0)
           .sort((a, b) => b.vistas - a.vistas)
-          .map(cat => ({
-            nombre: cat.nombre.charAt(0).toUpperCase() + cat.nombre.slice(1),
-            vistas: cat.vistas,
-            entidades: Array.from(cat.entidades.values())
+          .map(c => ({
+            nombre: c.nombre.charAt(0).toUpperCase() + c.nombre.slice(1).replace(/_/g, ' '),
+            vistas: c.vistas,
+            entidades: Array.from(c.entidades.values())
               .sort((a, b) => b.clicks - a.clicks)
-              .map(ent => ({
-                nombre: ent.nombre,
-                clicks: ent.clicks,
-                acciones: ent.acciones.sort((a, b) => b.count - a.count)
+              .map(e => ({
+                nombre: e.nombre,
+                clicks: e.clicks,
+                acciones: e.acciones.sort((a, b) => b.count - a.count)
               }))
+          })),
+        entidades: Array.from(p.entidades.values())
+          .sort((a, b) => b.clicks - a.clicks)
+          .map(e => ({
+            nombre: e.nombre,
+            categoria: e.categoria,
+            clicks: e.clicks,
+            acciones: e.acciones.sort((a, b) => b.count - a.count)
           }))
       }))
       .sort((a, b) => b.vistas - a.vistas);
 
-    // Convertir Sets a conteos en statsByCategory
-    const statsByCategoryClean = {};
-    Object.keys(statsByCategory).forEach(cat => {
-      statsByCategoryClean[cat] = {
-        name: statsByCategory[cat].name,
-        totalEntities: statsByCategory[cat].totalEntities.size,
-        totalEvents: statsByCategory[cat].totalEvents
-      };
+    // ========================================
+    // PASO 5: CALCULAR RESUMEN
+    // ========================================
+    
+    const totalCategorias = new Set();
+    const totalEntidades = new Set();
+    
+    pueblosJerarquico.forEach(p => {
+      p.categorias.forEach(c => {
+        totalCategorias.add(c.nombre);
+        c.entidades.forEach(e => totalEntidades.add(e.nombre));
+      });
+      p.entidades.forEach(e => totalEntidades.add(e.nombre));
     });
 
     // ========================================
-    // PASO 5: PREPARAR RESUMEN DE CORRECCIONES
+    // PASO 6: PREPARAR CORRECCIONES (DEBUG)
     // ========================================
-
-    const correctionsSummary = [];
-    correctCategories.forEach((entityInfo, key) => {
-      if (entityInfo.hadMultipleCategories) {
-        correctionsSummary.push({
-          entity: entityInfo.entityName,
-          pueblo: entityInfo.puebloName,
-          assignedCategory: entityInfo.correctCategory,
-          breakdown: entityInfo.categoriesBreakdown,
-          totalEvents: entityInfo.totalEvents
+    
+    const correcciones = [];
+    categoriasCorrectas.forEach((info, key) => {
+      if (info.tuvoMultiplesCategorias) {
+        correcciones.push({
+          entidad: info.entityName,
+          pueblo: info.puebloId,
+          categoriaAsignada: info.correctCategory,
+          desglose: info.categoriesBreakdown,
+          totalEventos: info.totalEvents
         });
       }
     });
-    correctionsSummary.sort((a, b) => b.totalEvents - a.totalEvents);
+    correcciones.sort((a, b) => b.totalEventos - a.totalEventos);
 
     // ========================================
-    // PASO 6: RESPUESTA
+    // PASO 7: RESPUESTA
     // ========================================
-
-    const uniqueEntities = new Set();
-    correctCategories.forEach((info, key) => {
-      uniqueEntities.add(info.entityName.toLowerCase());
-    });
-
+    
     res.json({
       success: true,
-      version: '4.0.0-intelligent',
-      timestamp: new Date(),
-      
-      // Resumen general
-      resumen: {
-        totalEventos: events.length,
-        totalPueblos: pueblosJerarquico.length,
-        totalEntidades: uniqueEntities.size,
-        correccionesAplicadas: correctionsSummary.length,
-        periodo: `Últimos ${days} días`
-      },
-
-      // Vista jerárquica: Pueblo → Categoría → Entidad → Acciones
-      pueblos: pueblosJerarquico,
-
-      // Estadísticas por categoría (corregidas)
-      statsByCategory: statsByCategoryClean,
-
-      // Eventos por tipo
-      statsByEventType: Object.entries(statsByEventType)
-        .map(([event, count]) => ({ evento: event, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 20),
-
-      // 🔧 Correcciones aplicadas (para debug)
-      correctionsSummary: correctionsSummary.slice(0, 20),
-
-      // Top entidades (usando categoría correcta)
-      topEntities: Array.from(correctCategories.values())
-        .sort((a, b) => b.totalEvents - a.totalEvents)
-        .slice(0, 20)
-        .map(e => ({
-          name: e.entityName,
-          pueblo: e.puebloName,
-          category: e.correctCategory,
-          totalEvents: e.totalEvents
+      data: {
+        resumen: {
+          totalEventos: totalEvents,
+          totalPueblos: pueblosJerarquico.length,
+          totalCategorias: totalCategorias.size,
+          totalEntidades: totalEntidades.size,
+          totalAcciones: accionesData.reduce((sum, a) => sum + a.count, 0),
+          correccionesAplicadas: correcciones.length,
+          periodo: `Últimos ${days} días`
+        },
+        
+        pueblos: pueblosJerarquico,
+        
+        eventosPorTipo: eventsByType.map(e => ({ evento: e._id, count: e.count })),
+        topPueblos: pueblosViews.map(p => ({ pueblo: p._id, count: p.views })),
+        topCategorias: categoriasData.map(c => ({ 
+          categoria: c._id.categoria, 
+          pueblo: c._id.pueblo,
+          count: c.count 
         })),
-
-      // Datos crudos (últimos 50 eventos)
-      rawData: events.slice(0, 50).map(e => ({
-        event_name: e.event_name,
-        timestamp: e.timestamp,
-        data: e.data
-      }))
+        topEntidades: entidadesData.map(e => ({ 
+          entidad: e._id.entidad, 
+          categoria: e._id.categoria,
+          pueblo: e._id.pueblo,
+          count: e.clicks 
+        })),
+        acciones: accionesData.map(a => ({ 
+          action: a._id.action, 
+          entity: a._id.entity,
+          categoria: a._id.categoria,
+          pueblo: a._id.pueblo,
+          count: a.count 
+        })),
+        eventsByDay,
+        
+        // 🧠 NUEVO: Correcciones aplicadas
+        correcciones: correcciones.slice(0, 20)
+      }
     });
-
+    
   } catch (error) {
     console.error('Error en dashboard MongoDB:', error);
     res.json({ success: false, error: error.message });
   }
 });
 
-// ========================================
-// 🔧 ENDPOINT DEBUG: VER CORRECCIONES
-// ========================================
-
-app.get('/api/mongodb/debug/corrections', async (req, res) => {
+// 🧠 NUEVO ENDPOINT: Ver correcciones aplicadas
+app.get('/api/mongodb/correcciones', async (req, res) => {
   try {
     if (!mongoDb) {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
-
+    
     const { days = 30 } = req.query;
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
 
-    const events = await mongoDb.collection('events')
+    const todosEventos = await mongoDb.collection('events')
       .find({ server_time: { $gte: startDate } })
       .toArray();
+    
+    const categoriasCorrectas = calcularCategoriaMayoritaria(todosEventos);
 
-    const correctCategories = calculateCorrectCategories(events);
-
-    // Solo entidades con múltiples categorías (que fueron corregidas)
-    const corrections = [];
-    correctCategories.forEach((entityInfo, key) => {
-      if (entityInfo.hadMultipleCategories) {
-        corrections.push({
-          entity: entityInfo.entityName,
-          pueblo: entityInfo.puebloName,
-          assignedCategory: entityInfo.correctCategory,
-          breakdown: entityInfo.categoriesBreakdown,
-          totalEvents: entityInfo.totalEvents
+    const correcciones = [];
+    categoriasCorrectas.forEach((info, key) => {
+      if (info.tuvoMultiplesCategorias) {
+        correcciones.push({
+          entidad: info.entityName,
+          pueblo: info.puebloId,
+          categoriaAsignada: info.correctCategory,
+          desglose: info.categoriesBreakdown,
+          totalEventos: info.totalEvents
         });
       }
     });
-
-    corrections.sort((a, b) => b.totalEvents - a.totalEvents);
+    correcciones.sort((a, b) => b.totalEventos - a.totalEventos);
 
     res.json({
       success: true,
-      message: 'Entidades con múltiples categorías corregidas por Majority Vote',
-      totalEntities: correctCategories.size,
-      totalCorrections: corrections.length,
-      corrections
+      mensaje: 'Entidades con múltiples categorías corregidas por Majority Vote',
+      totalEntidades: categoriasCorrectas.size,
+      totalCorrecciones: correcciones.length,
+      correcciones
     });
-
+    
   } catch (error) {
-    console.error('Error en debug corrections:', error);
     res.json({ success: false, error: error.message });
   }
 });
@@ -1643,5 +1784,4 @@ app.listen(PORT, () => {
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🧠 Majority Vote: ACTIVADO`);
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`🔧 Debug corrections: http://localhost:${PORT}/api/mongodb/debug/corrections`);
 });
