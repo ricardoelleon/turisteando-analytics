@@ -64,7 +64,7 @@ function initializeFirebaseAdmin() {
     if (!admin.apps.length) {
       admin.initializeApp({
         credential: admin.credential.cert({
-          projectId: process.env.PROPERTY_ID || 'turisteandoapp-ee561',
+        projectId: 'turisteandoapp-ee561',
           clientEmail: process.env.SERVICE_ACCOUNT_EMAIL,
           privateKey: process.env.SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, '\n'),
         }),
