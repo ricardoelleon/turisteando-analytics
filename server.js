@@ -2599,6 +2599,101 @@ app.get('/admin', (req, res) => {
 });
 
 // ========================================
+// TEST: Enviar notificación de prueba (GET para fácil debugging)
+// ========================================
+app.get('/api/notifications/test-send', async (req, res) => {
+  try {
+    console.log('===== TEST SEND NOTIFICATION =====');
+    
+    // Verificar Firebase Admin
+    if (!admin.apps.length) {
+      console.log('❌ Firebase Admin NO inicializado');
+      return res.json({ 
+        success: false, 
+        error: 'Firebase Admin no inicializado',
+        hint: 'Verifica SERVICE_ACCOUNT_EMAIL y SERVICE_ACCOUNT_PRIVATE_KEY en variables de entorno'
+      });
+    }
+    console.log('✅ Firebase Admin OK');
+    
+    // Verificar MongoDB
+    if (!mongoDb) {
+      console.log('❌ MongoDB NO conectado');
+      return res.json({ success: false, error: 'MongoDB no conectado' });
+    }
+    console.log('✅ MongoDB OK');
+    
+    // Obtener tokens
+    const devices = await mongoDb.collection('device_tokens').find({}).toArray();
+    const tokens = devices.map(d => d.token).filter(t => t);
+    
+    console.log('📱 Tokens encontrados:', tokens.length);
+    
+    if (tokens.length === 0) {
+      return res.json({ success: false, error: 'No hay tokens registrados' });
+    }
+    
+    // Enviar notificación de prueba
+    const message = {
+      notification: {
+        title: 'Prueba Turisteando',
+        body: 'Esta es una notificación de prueba'
+      },
+      data: {
+        action: 'open_home',
+        title: 'Prueba Turisteando',
+        body: 'Esta es una notificación de prueba'
+      },
+      tokens: tokens
+    };
+    
+    console.log('📤 Enviando mensaje a', tokens.length, 'dispositivos...');
+    
+    const response = await admin.messaging().sendEachForMulticast(message);
+    
+    console.log('✅ Respuesta:', {
+      successCount: response.successCount,
+      failureCount: response.failureCount
+    });
+    
+    // Guardar en historial
+    await mongoDb.collection('notifications_history').insertOne({
+      titulo: 'Prueba Turisteando',
+      mensaje: 'Esta es una notificación de prueba',
+      tokens_enviados: tokens.length,
+      enviados_exitosos: response.successCount,
+      enviados_fallidos: response.failureCount,
+      fecha_envio: new Date()
+    });
+    
+    res.json({
+      success: true,
+      message: 'Notificación enviada',
+      stats: {
+        total: tokens.length,
+        exitosos: response.successCount,
+        fallidos: response.failureCount
+      },
+      details: response.responses.map((r, i) => ({
+        token: tokens[i].substring(0, 30) + '...',
+        success: r.success,
+        error: r.error?.message || null
+      }))
+    });
+    
+  } catch (error) {
+    console.error('❌ ERROR:', error);
+    res.json({ 
+      success: false, 
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+
+
+// ========================================
 // INICIAR SERVIDOR
 // ========================================
 
