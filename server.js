@@ -1,11 +1,15 @@
 const express = require('express');
 const cors = require('cors');
 const { BetaAnalyticsDataClient } = require('@google-analytics/data');
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb');
 // ========================================
 // NUEVO: Firebase Admin para notificaciones
 // ========================================
 const admin = require('firebase-admin');
+// ========================================
+// NUEVO: node-cron para notificaciones recurrentes y programadas
+// ========================================
+const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -28,12 +32,21 @@ const analyticsDataClient = new BetaAnalyticsDataClient({
 const PROPERTY_ID = process.env.PROPERTY_ID || '487082948';
 
 // ========================================
-// MONGODB ATLAS (nueva conexión)
+// MONGODB ATLAS (tu conexión existente)
 // ========================================
 
 const MONGO_URI = process.env.MONGODB_URI;
 let mongoClient = null;
 let mongoDb = null;
+
+// ========================================
+// NUEVO: Colecciones para notificaciones
+// ========================================
+let deviceTokensCollection;
+let notificationsHistoryCollection;
+let scheduledNotificationsCollection;
+let recurringNotificationsCollection;
+let userPreferencesCollection;
 
 async function connectMongoDB() {
   if (!MONGO_URI) {
@@ -45,6 +58,20 @@ async function connectMongoDB() {
     mongoClient = new MongoClient(MONGO_URI);
     await mongoClient.connect();
     mongoDb = mongoClient.db('turisteando_analytics');
+    
+    // Inicializar colecciones de notificaciones
+    deviceTokensCollection = mongoDb.collection('device_tokens');
+    notificationsHistoryCollection = mongoDb.collection('notifications_history');
+    scheduledNotificationsCollection = mongoDb.collection('scheduled_notifications');
+    recurringNotificationsCollection = mongoDb.collection('recurring_notifications');
+    userPreferencesCollection = mongoDb.collection('user_preferences');
+    
+    // Crear índices para mejor rendimiento
+    await deviceTokensCollection.createIndex({ token: 1 }, { unique: true }).catch(() => {});
+    await notificationsHistoryCollection.createIndex({ fecha_envio: -1 }).catch(() => {});
+    await scheduledNotificationsCollection.createIndex({ scheduled_date: 1, sent: 1 }).catch(() => {});
+    await recurringNotificationsCollection.createIndex({ active: 1 }).catch(() => {});
+    
     console.log('✅ MongoDB Atlas conectado');
     return true;
   } catch (error) {
@@ -82,7 +109,7 @@ function initializeFirebaseAdmin() {
 initializeFirebaseAdmin();
 
 // ========================================
-// HELPER FUNCTIONS
+// HELPER FUNCTIONS (tu código existente)
 // ========================================
 
 async function runReport(dimensions, metrics, dateRange, orderBy = null, limit = 10) {
@@ -127,15 +154,10 @@ function extractMetric(row, index, defaultValue = 0) {
 }
 
 // ========================================
-// FUNCIÓN INTELIGENTE - VOTO MAYORITARIO
+// FUNCIÓN INTELIGENTE - VOTO MAYORITARIO (tu código existente)
 // ========================================
 
-/**
- * Calcula la categoría correcta para cada entidad usando voto mayoritario.
- * Una entidad se asigna a la categoría donde tiene MÁS eventos.
- */
 function calculateCorrectCategories(entidadesData) {
-  // Mapa para agrupar eventos por entidad
   const entidadStats = new Map();
   
   entidadesData.forEach(e => {
@@ -146,7 +168,6 @@ function calculateCorrectCategories(entidadesData) {
     
     if (!entidadNombre) return;
     
-    // Clave única para esta entidad en este pueblo
     const entityKey = `${entidadNombre}|${pueblo || 'sin_pueblo'}`;
     
     if (!entidadStats.has(entityKey)) {
@@ -161,12 +182,10 @@ function calculateCorrectCategories(entidadesData) {
     const stats = entidadStats.get(entityKey);
     stats.totalClicks += clicks;
     
-    // Contar eventos por categoría
     const currentCount = stats.categorias.get(categoria) || 0;
     stats.categorias.set(categoria, currentCount + clicks);
   });
   
-  // Determinar la categoría ganadora para cada entidad
   const corrections = new Map();
   
   entidadStats.forEach((stats, entityKey) => {
@@ -191,7 +210,7 @@ function calculateCorrectCategories(entidadesData) {
 }
 
 // ========================================
-// MIDDLEWARE PARA LOGGING
+// MIDDLEWARE PARA LOGGING (tu código existente)
 // ========================================
 
 app.use((req, res, next) => {
@@ -200,7 +219,325 @@ app.use((req, res, next) => {
 });
 
 // ========================================
-// BASIC ENDPOINTS
+// ========================================
+// NUEVO: FUNCIONES DE NOTIFICACIONES
+// ========================================
+// ========================================
+
+/**
+ * Enviar notificación a tokens específicos
+ */
+async function sendNotificationToTokens(tokens, notification, actionData = {}) {
+  if (!tokens || tokens.length === 0) {
+    return { success: true, total: 0, exitosos: 0, fallidos: 0, details: [] };
+  }
+
+  const results = [];
+  const chunks = [];
+  const CHUNK_SIZE = 500;
+
+  for (let i = 0; i < tokens.length; i += CHUNK_SIZE) {
+    chunks.push(tokens.slice(i, i + CHUNK_SIZE));
+  }
+
+  for (const chunk of chunks) {
+    const message = {
+      notification: {
+        title: notification.title,
+        body: notification.body,
+      },
+      data: {
+        action_type: actionData.action_type || 'open_home',
+        action_data: JSON.stringify(actionData),
+        timestamp: new Date().toISOString(),
+      },
+      tokens: chunk,
+      android: {
+        notification: {
+          channelId: 'turisteando_notifications',
+          priority: 'high',
+          sound: 'default',
+        },
+        priority: 'high',
+      },
+    };
+
+    if (notification.image) {
+      message.notification.imageUrl = notification.image;
+    }
+
+    try {
+      const response = await admin.messaging().sendEachForMulticast(message);
+      
+      response.responses.forEach((resp, idx) => {
+        results.push({
+          token: chunk[idx],
+          success: resp.success,
+          error: resp.error?.message || null,
+        });
+      });
+    } catch (error) {
+      console.error('Error enviando chunk:', error);
+      chunk.forEach(token => {
+        results.push({
+          token,
+          success: false,
+          error: error.message,
+        });
+      });
+    }
+  }
+
+  const exitosos = results.filter(r => r.success).length;
+  const fallidos = results.filter(r => !r.success).length;
+
+  return {
+    success: true,
+    total: tokens.length,
+    exitosos,
+    fallidos,
+    details: results,
+  };
+}
+
+/**
+ * Obtener tokens con segmentación
+ */
+async function getTokensWithSegmentation(segmentation = {}) {
+  const query = { activo: true };
+  
+  if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+    query['preferencias.pueblos_interes'] = { $in: segmentation.pueblos };
+  }
+  
+  if (segmentation.categorias && segmentation.categorias.length > 0) {
+    query['preferencias.categorias_interes'] = { $in: segmentation.categorias };
+  }
+  
+  if (segmentation.device_type) {
+    query.device_type = segmentation.device_type;
+  }
+  
+  if (segmentation.active_in_days) {
+    const date = new Date();
+    date.setDate(date.getDate() - segmentation.active_in_days);
+    query.ultimo_acceso = { $gte: date };
+  }
+  
+  if (segmentation.new_users_only) {
+    const date = new Date();
+    date.setDate(date.getDate() - segmentation.new_users_only);
+    query.fecha_registro = { $gte: date };
+  }
+  
+  const devices = await deviceTokensCollection.find(query).toArray();
+  return devices.map(d => d.token);
+}
+
+/**
+ * Guardar notificación en historial
+ */
+async function saveNotificationToHistory(notification, result, targetType = 'all', targetData = {}) {
+  try {
+    await notificationsHistoryCollection.insertOne({
+      titulo: notification.title,
+      mensaje: notification.body,
+      imagen: notification.image || null,
+      action_type: notification.action_type || 'open_home',
+      action_data: notification.action_data || {},
+      target_type: targetType,
+      target_data: targetData,
+      tokens_enviados: result.total,
+      enviados_exitosos: result.exitosos,
+      enviados_fallidos: result.fallidos,
+      fecha_envio: new Date(),
+      tipo: notification.tipo || 'manual',
+    });
+  } catch (error) {
+    console.error('Error guardando historial:', error);
+  }
+}
+
+/**
+ * Enviar notificación de bienvenida
+ */
+async function sendWelcomeNotification(token) {
+  try {
+    const notification = {
+      title: '¡Bienvenido a TuristeandoAPP! 🎉',
+      body: 'Descubre los pueblos más hermosos de Colombia. ¡Empieza a explorar!',
+      tipo: 'welcome'
+    };
+    
+    const actionData = {
+      action_type: 'open_home',
+    };
+    
+    const result = await sendNotificationToTokens([token], notification, actionData);
+    
+    if (result.exitosos > 0) {
+      await deviceTokensCollection.updateOne(
+        { token },
+        { $set: { welcome_sent: true } }
+      );
+      
+      await saveNotificationToHistory(
+        notification,
+        result,
+        'single',
+        { token: token.substring(0, 20) + '...' }
+      );
+      
+      console.log('✅ Notificación de bienvenida enviada');
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error enviando bienvenida:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ========================================
+// NUEVO: CRON JOBS PARA NOTIFICACIONES
+// ========================================
+
+const scheduledJobs = new Map();
+
+/**
+ * Procesar notificaciones programadas (cada minuto)
+ */
+async function processScheduledNotifications() {
+  try {
+    const now = new Date();
+    
+    const pendingNotifications = await scheduledNotificationsCollection.find({
+      sent: false,
+      scheduled_date: { $lte: now },
+    }).toArray();
+    
+    for (const notification of pendingNotifications) {
+      console.log(`📤 Procesando notificación programada: ${notification.title}`);
+      
+      let tokens;
+      if (notification.target_type === 'all') {
+        const devices = await deviceTokensCollection.find({ activo: true }).toArray();
+        tokens = devices.map(d => d.token);
+      } else {
+        tokens = await getTokensWithSegmentation(notification.segmentation || {});
+      }
+      
+      const result = await sendNotificationToTokens(
+        tokens,
+        { title: notification.title, body: notification.body, image: notification.image },
+        { ...notification.action_data, action_type: notification.action_type }
+      );
+      
+      await saveNotificationToHistory(
+        { ...notification, tipo: 'scheduled' },
+        result,
+        notification.target_type,
+        notification.segmentation
+      );
+      
+      await scheduledNotificationsCollection.updateOne(
+        { _id: notification._id },
+        { $set: { sent: true, sent_at: now, result: { exitosos: result.exitosos, fallidos: result.fallidos } } }
+      );
+    }
+    
+  } catch (error) {
+    console.error('Error procesando notificaciones programadas:', error);
+  }
+}
+
+/**
+ * Programar job recurrente
+ */
+function scheduleRecurringJob(id, config) {
+  if (scheduledJobs.has(id)) {
+    scheduledJobs.get(id).stop();
+  }
+  
+  const job = cron.schedule(config.cron_expression, async () => {
+    console.log(`🔄 Ejecutando notificación recurrente: ${config.name}`);
+    
+    const now = new Date();
+    if (config.end_date && now > new Date(config.end_date)) {
+      job.stop();
+      scheduledJobs.delete(id);
+      return;
+    }
+    if (config.start_date && now < new Date(config.start_date)) {
+      return;
+    }
+    
+    let tokens;
+    if (config.target_type === 'all') {
+      const devices = await deviceTokensCollection.find({ activo: true }).toArray();
+      tokens = devices.map(d => d.token);
+    } else {
+      tokens = await getTokensWithSegmentation(config.segmentation || {});
+    }
+    
+    const result = await sendNotificationToTokens(
+      tokens,
+      { title: config.title, body: config.body, image: config.image },
+      { ...config.action_data, action_type: config.action_type }
+    );
+    
+    await saveNotificationToHistory(
+      { ...config, tipo: 'recurring' },
+      result,
+      config.target_type,
+      config.segmentation
+    );
+    
+    await recurringNotificationsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { 
+        $set: { last_run: now },
+        $inc: { total_runs: 1 }
+      }
+    );
+    
+  }, {
+    timezone: config.timezone || 'America/Bogota',
+  });
+  
+  scheduledJobs.set(id, job);
+}
+
+/**
+ * Cargar jobs recurrentes al iniciar
+ */
+async function loadRecurringJobs() {
+  try {
+    const recurring = await recurringNotificationsCollection.find({ active: true }).toArray();
+    
+    for (const config of recurring) {
+      scheduleRecurringJob(config._id.toString(), config);
+    }
+    
+    console.log(`✅ ${recurring.length} notificaciones recurrentes cargadas`);
+  } catch (error) {
+    console.error('Error cargando jobs recurrentes:', error);
+  }
+}
+
+// ========================================
+// INICIAR CRON JOBS
+// ========================================
+
+// Procesar notificaciones programadas cada minuto
+cron.schedule('* * * * *', processScheduledNotifications);
+console.log('✅ Cron de notificaciones programadas iniciado');
+
+// Cargar jobs recurrentes después de conectar MongoDB
+setTimeout(loadRecurringJobs, 2000);
+
+// ========================================
+// BASIC ENDPOINTS (tu código existente)
 // ========================================
 
 app.get('/api/health', (req, res) => {
@@ -210,9 +547,13 @@ app.get('/api/health', (req, res) => {
     propertyId: PROPERTY_ID,
     mongodb: mongoDb ? 'connected' : 'disconnected',
     firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
-    version: '4.0.0-notifications'
+    version: '5.0.0-notifications-pro'
   });
 });
+
+// ========================================
+// TODOS TUS ENDPOINTS EXISTENTES SIN CAMBIOS
+// ========================================
 
 // Overview - KPIs generales
 app.get('/api/analytics/overview', async (req, res) => {
@@ -344,10 +685,9 @@ app.get('/api/analytics/top-screens', async (req, res) => {
 });
 
 // ========================================
-// ENDPOINTS DINÁMICOS - TURISTEANDO APP
+// ENDPOINTS DINÁMICOS - TURISTEANDO APP (tu código existente)
 // ========================================
 
-// EVENTOS DESCUBIERTOS AUTOMÁTICAMENTE
 app.get('/api/analytics/eventos-descubiertos', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -481,7 +821,7 @@ app.get('/api/analytics/categorias', async (req, res) => {
   }
 });
 
-// VISTA DE CATEGORÍAS (category_view)
+// VISTA DE CATEGORÍAS
 app.get('/api/analytics/categorias-vistas', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -580,7 +920,7 @@ app.get('/api/analytics/entidades', async (req, res) => {
   }
 });
 
-// DETALLES DE ENTIDADES (entity_detail_view)
+// DETALLES DE ENTIDADES
 app.get('/api/analytics/entidades-detalles', async (req, res) => {
   try {
     const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -1259,10 +1599,9 @@ app.get('/api/analytics/parametros-disponibles', (req, res) => {
 });
 
 // ========================================
-// MONGODB ATLAS - ENDPOINTS
+// MONGODB ATLAS - ENDPOINTS (tu código existente)
 // ========================================
 
-// Recibir eventos desde la app Android
 app.post('/api/mongodb/event', async (req, res) => {
   try {
     if (!mongoDb) {
@@ -1302,7 +1641,7 @@ app.post('/api/mongodb/event', async (req, res) => {
 });
 
 // ========================================
-// DASHBOARD MONGODB - JERÁRQUICO INTELIGENTE
+// DASHBOARD MONGODB - JERÁRQUICO INTELIGENTE (tu código existente)
 // ========================================
 
 app.get('/api/mongodb/dashboard', async (req, res) => {
@@ -1315,10 +1654,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
 
-    // ========================================
-    // PASO 1: OBTENER TODOS LOS DATOS CRUDOS
-    // ========================================
-    
     const [
       totalEvents,
       eventsByType,
@@ -1328,10 +1663,8 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       accionesData,
       eventsByDay
     ] = await Promise.all([
-      // 1. Total de eventos
       mongoDb.collection('events').countDocuments({ server_time: { $gte: startDate } }),
       
-      // 2. Eventos por tipo
       mongoDb.collection('events').aggregate([
         { $match: { server_time: { $gte: startDate } } },
         { $group: { _id: '$event_name', count: { $sum: 1 } } },
@@ -1339,7 +1672,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         { $limit: 20 }
       ]).toArray(),
       
-      // 3. Vistas de pueblos - NORMALIZADO A MINÚSCULAS
       mongoDb.collection('events').aggregate([
         { $match: { 
           server_time: { $gte: startDate },
@@ -1362,7 +1694,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         { $limit: 20 }
       ]).toArray(),
       
-      // 4. Categorías con pueblo - NORMALIZADO
       mongoDb.collection('events').aggregate([
         { $match: { 
           server_time: { $gte: startDate },
@@ -1378,7 +1709,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         { $limit: 30 }
       ]).toArray(),
       
-      // 5. Entidades con categoría y pueblo - NORMALIZADO
       mongoDb.collection('events').aggregate([
         { $match: { 
           server_time: { $gte: startDate },
@@ -1395,7 +1725,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         { $limit: 50 }
       ]).toArray(),
       
-      // 6. Acciones con entidad, categoría y pueblo - NORMALIZADO
       mongoDb.collection('events').aggregate([
         { $match: { 
           server_time: { $gte: startDate },
@@ -1425,7 +1754,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         { $limit: 100 }
       ]).toArray(),
       
-      // 7. Eventos por día
       mongoDb.collection('events').aggregate([
         { $match: { server_time: { $gte: startDate } } },
         { $group: { _id: '$date', count: { $sum: 1 }, devices: { $addToSet: '$data.device_model' } } },
@@ -1434,23 +1762,13 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       ]).toArray()
     ]);
 
-    // ========================================
-    // PASO 2: APLICAR VOTO MAYORITARIO
-    // ========================================
-    
     const categoryCorrections = calculateCorrectCategories(entidadesData);
 
-    // ========================================
-    // PASO 3: CONSTRUIR ESTRUCTURA JERÁRQUICA
-    // ========================================
-    
     const pueblosMap = new Map();
     
-    // Función helper para normalizar nombres de pueblo
     const normalizePueblo = (nombre) => {
       if (!nombre) return 'sin_pueblo';
       const normalized = nombre.toString().toLowerCase().trim();
-      // Mapear variaciones conocidas
       const mappings = {
         'villa de leyva': 'villa_de_leyva',
         'villa_de_leyva': 'villa_de_leyva',
@@ -1467,7 +1785,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       return mappings[normalized] || normalized.replace(/\s+/g, '_');
     };
     
-    // Función helper para nombre display
     const formatPuebloName = (normalized) => {
       const displayNames = {
         'raquira': 'Ráquira',
@@ -1481,7 +1798,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       return displayNames[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1).replace(/_/g, ' ');
     };
     
-    // Inicializar pueblos desde vistas
     pueblosViews.forEach(p => {
       if (p._id) {
         const puebloKey = normalizePueblo(p._id);
@@ -1499,7 +1815,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       }
     });
     
-    // Agregar categorías a pueblos
     categoriasData.forEach(c => {
       const puebloKey = normalizePueblo(c._id.pueblo);
       const categoriaNombre = c._id.categoria || 'sin_categoria';
@@ -1526,7 +1841,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       pueblo.categorias.get(categoriaNombre).vistas += c.count;
     });
     
-    // Agregar entidades a pueblos y categorías - USANDO CATEGORÍA CORREGIDA
     entidadesData.forEach(e => {
       const puebloKey = normalizePueblo(e._id.pueblo);
       const categoriaOriginal = e._id.categoria || 'sin_categoria';
@@ -1534,12 +1848,9 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       
       if (!entidadNombre) return;
       
-      // ===== AQUÍ ESTÁ LA MAGIA INTELIGENTE =====
-      // Obtener la categoría correcta por voto mayoritario
       const entityKey = `${entidadNombre}|${puebloKey}`;
       const correction = categoryCorrections.get(entityKey);
       const categoriaNombre = correction ? correction.categoriaCorrecta : categoriaOriginal;
-      // ===========================================
       
       if (!pueblosMap.has(puebloKey)) {
         pueblosMap.set(puebloKey, {
@@ -1553,10 +1864,8 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       
       const pueblo = pueblosMap.get(puebloKey);
       
-      // Usar solo la clave de entidad (sin categoría) para evitar duplicados
       const entidadKey = entidadNombre;
       
-      // Agregar a entidades del pueblo
       if (!pueblo.entidades.has(entidadKey)) {
         pueblo.entidades.set(entidadKey, {
           nombre: entidadNombre,
@@ -1567,7 +1876,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       }
       pueblo.entidades.get(entidadKey).clicks += e.clicks;
       
-      // Agregar a la categoría del pueblo
       if (!pueblo.categorias.has(categoriaNombre)) {
         pueblo.categorias.set(categoriaNombre, {
           nombre: categoriaNombre,
@@ -1587,7 +1895,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       categoria.entidades.get(entidadKey).clicks += e.clicks;
     });
     
-    // Agregar acciones a entidades - TAMBIÉN USAR CATEGORÍA CORREGIDA
     accionesData.forEach(a => {
       const puebloKey = normalizePueblo(a._id.pueblo);
       const entidadNombre = a._id.entity;
@@ -1596,7 +1903,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       
       if (!entidadNombre || !actionName) return;
       
-      // Obtener categoría corregida
       const entityKey = `${entidadNombre}|${puebloKey}`;
       const correction = categoryCorrections.get(entityKey);
       const categoriaNombre = correction ? correction.categoriaCorrecta : categoriaOriginal;
@@ -1605,10 +1911,8 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         const pueblo = pueblosMap.get(puebloKey);
         const entidadKey = entidadNombre;
         
-        // Buscar la entidad en el pueblo
         if (pueblo.entidades.has(entidadKey)) {
           const entidad = pueblo.entidades.get(entidadKey);
-          // Verificar si ya existe esta acción
           const accionExistente = entidad.acciones.find(acc => acc.accion === actionName);
           if (accionExistente) {
             accionExistente.count += a.count;
@@ -1620,7 +1924,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
           }
         }
         
-        // También actualizar en la categoría
         if (pueblo.categorias.has(categoriaNombre)) {
           const categoria = pueblo.categorias.get(categoriaNombre);
           if (categoria.entidades.has(entidadKey)) {
@@ -1638,10 +1941,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
         }
       }
     });
-    
-    // ========================================
-    // PASO 4: CONVERTIR MAPS A ARRAYS
-    // ========================================
     
     const pueblosJerarquico = Array.from(pueblosMap.values())
       .filter(p => p.vistas > 0 || p.entidades.size > 0 || p.categorias.size > 0)
@@ -1674,10 +1973,6 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       }))
       .sort((a, b) => b.vistas - a.vistas);
 
-    // ========================================
-    // PASO 5: CALCULAR RESUMEN
-    // ========================================
-    
     const totalCategorias = new Set();
     const totalEntidades = new Set();
     
@@ -1693,14 +1988,9 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       });
     });
 
-    // ========================================
-    // PASO 6: RESPUESTA
-    // ========================================
-    
     res.json({
       success: true,
       data: {
-        // Resumen
         resumen: {
           totalEventos: totalEvents,
           totalPueblos: pueblosJerarquico.length,
@@ -1710,11 +2000,7 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
           periodo: `Últimos ${days} días`,
           modoInteligente: true
         },
-        
-        // Estructura jerárquica
         pueblos: pueblosJerarquico,
-        
-        // Datos planos (para compatibilidad)
         eventosPorTipo: eventsByType.map(e => ({ evento: e._id, count: e.count })),
         topPueblos: pueblosViews.map(p => ({ pueblo: p._id, count: p.views })),
         topCategorias: categoriasData.map(c => ({ 
@@ -1767,10 +2053,7 @@ app.get('/api/mongodb/events/recent', async (req, res) => {
   }
 });
 
-// ========================================
 // ENDPOINT PARA VER CORRECCIONES (DEBUG)
-// ========================================
-
 app.get('/api/mongodb/debug/corrections', async (req, res) => {
   try {
     if (!mongoDb) {
@@ -1781,7 +2064,6 @@ app.get('/api/mongodb/debug/corrections', async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
     
-    // Obtener datos de entidades
     const entidadesData = await mongoDb.collection('events').aggregate([
       { $match: { 
         server_time: { $gte: startDate },
@@ -1797,10 +2079,8 @@ app.get('/api/mongodb/debug/corrections', async (req, res) => {
       { $sort: { clicks: -1 } }
     ]).toArray();
     
-    // Calcular correcciones
     const corrections = calculateCorrectCategories(entidadesData);
     
-    // Formatear resultado
     const listaCorrecciones = [];
     corrections.forEach((info, entityKey) => {
       const [nombre, pueblo] = entityKey.split('|');
@@ -1809,7 +2089,6 @@ app.get('/api/mongodb/debug/corrections', async (req, res) => {
         eventos: count
       })).sort((a, b) => b.eventos - a.eventos);
       
-      // Solo mostrar si hay más de una categoría (es decir, había conflicto)
       if (categoriasArray.length > 1) {
         listaCorrecciones.push({
           entidad: nombre,
@@ -1821,7 +2100,6 @@ app.get('/api/mongodb/debug/corrections', async (req, res) => {
       }
     });
     
-    // Ordenar por más eventos
     listaCorrecciones.sort((a, b) => b.totalEventos - a.totalEventos);
     
     res.json({
@@ -1842,13 +2120,12 @@ app.get('/api/mongodb/debug/corrections', async (req, res) => {
 
 // ========================================
 // ========================================
-// NUEVO: NOTIFICACIONES PUSH - ENDPOINTS
+// NUEVOS ENDPOINTS DE NOTIFICACIONES PRO
 // ========================================
 // ========================================
 
 /**
- * Registrar token de dispositivo
- * POST /api/notifications/register
+ * Registrar token de dispositivo (ACTUALIZADO con bienvenida automática)
  */
 app.post('/api/notifications/register', async (req, res) => {
   try {
@@ -1856,29 +2133,62 @@ app.post('/api/notifications/register', async (req, res) => {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
     
-    const { token, user_id, pueblo_preferido, categorias_interes } = req.body;
+    const { token, device_type = 'android', device_info = {} } = req.body;
     
     if (!token) {
-      return res.json({ success: false, error: 'token es requerido' });
+      return res.json({ success: false, error: 'Token requerido' });
     }
     
-    const deviceData = {
+    const existingDevice = await deviceTokensCollection.findOne({ token });
+    
+    if (existingDevice) {
+      await deviceTokensCollection.updateOne(
+        { token },
+        { 
+          $set: { 
+            ultimo_acceso: new Date(),
+            device_type,
+            device_info,
+            activo: true,
+          } 
+        }
+      );
+      
+      return res.json({ 
+        success: true, 
+        message: 'Token actualizado',
+        is_new: false,
+      });
+    }
+    
+    // Nuevo dispositivo
+    await deviceTokensCollection.insertOne({
       token,
-      user_id: user_id || null,
-      pueblo_preferido: pueblo_preferido || null,
-      categorias_interes: categorias_interes || [],
-      ultima_actividad: new Date().toISOString().split('T')[0],
-      updated_at: new Date()
-    };
+      device_type,
+      device_info,
+      fecha_registro: new Date(),
+      ultimo_acceso: new Date(),
+      activo: true,
+      preferencias: {
+        pueblos_interes: [],
+        categorias_interes: [],
+        notificaciones_activas: true,
+      },
+      welcome_sent: false,
+    });
     
-    // Upsert: actualizar si existe, crear si no
-    await mongoDb.collection('device_tokens').updateOne(
-      { token },
-      { $set: deviceData, $setOnInsert: { created_at: new Date() } },
-      { upsert: true }
-    );
+    // Enviar notificación de bienvenida automáticamente
+    if (process.env.WELCOME_NOTIFICATION !== 'false') {
+      setTimeout(async () => {
+        await sendWelcomeNotification(token);
+      }, 3000);
+    }
     
-    res.json({ success: true, message: 'Token registrado correctamente' });
+    res.json({ 
+      success: true, 
+      message: 'Token registrado exitosamente',
+      is_new: true,
+    });
     
   } catch (error) {
     console.error('Error registrando token:', error);
@@ -1887,77 +2197,43 @@ app.post('/api/notifications/register', async (req, res) => {
 });
 
 /**
- * Obtener datos dinámicos para el panel (pueblos, categorías, entidades)
- * GET /api/notifications/dynamic-data
+ * Actualizar preferencias de usuario (NUEVO)
  */
-app.get('/api/notifications/dynamic-data', async (req, res) => {
+app.post('/api/notifications/preferences', async (req, res) => {
   try {
     if (!mongoDb) {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
     
-    const { days = 30 } = req.query;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    const { token, pueblos_interes = [], categorias_interes = [], notificaciones_activas = true } = req.body;
     
-    // Obtener pueblos únicos
-    const pueblos = await mongoDb.collection('events').aggregate([
-      { $match: { server_time: { $gte: startDate } } },
-      { $project: { pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] } } },
-      { $match: { pueblo: { $ne: null, $ne: '' } } },
-      { $group: { _id: '$pueblo', count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
+    if (!token) {
+      return res.json({ success: false, error: 'Token requerido' });
+    }
     
-    // Obtener categorías únicas
-    const categorias = await mongoDb.collection('events').aggregate([
-      { $match: { server_time: { $gte: startDate } } },
-      { $project: { categoria: { $ifNull: ['$data.category_name', '$data.category_id'] } } },
-      { $match: { categoria: { $ne: null, $ne: '' } } },
-      { $group: { _id: '$categoria', count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
+    await deviceTokensCollection.updateOne(
+      { token },
+      {
+        $set: {
+          'preferencias.pueblos_interes': pueblos_interes,
+          'preferencias.categorias_interes': categorias_interes,
+          'preferencias.notificaciones_activas': notificaciones_activas,
+          'preferencias.actualizado': new Date(),
+        }
+      },
+      { upsert: true }
+    );
     
-    // Obtener entidades únicas con su información
-    const entidades = await mongoDb.collection('events').aggregate([
-      { $match: { server_time: { $gte: startDate }, event_name: { $in: ['entity_clicked', 'entity_detail_view'] } } },
-      { $project: { 
-        entidad: '$data.entity_name', 
-        categoria: { $ifNull: ['$data.category_name', '$data.category_id'] },
-        pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }
-      }},
-      { $match: { entidad: { $ne: null, $ne: '' } } },
-      { $group: { _id: { entidad: '$entidad', categoria: '$categoria', pueblo: '$pueblo' }, count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 100 }
-    ]).toArray();
-    
-    // Formatear entidades
-    const entidadesFormateadas = entidades.map(e => ({
-      nombre: e._id.entidad,
-      categoria: e._id.categoria,
-      pueblo: e._id.pueblo,
-      eventos: e.count
-    }));
-    
-    res.json({
-      success: true,
-      data: {
-        pueblos: pueblos.map(p => ({ nombre: p._id, eventos: p.count })),
-        categorias: categorias.map(c => ({ nombre: c._id, eventos: c.count })),
-        entidades: entidadesFormateadas
-      }
-    });
+    res.json({ success: true, message: 'Preferencias actualizadas' });
     
   } catch (error) {
-    console.error('Error obteniendo datos dinámicos:', error);
+    console.error('Error actualizando preferencias:', error);
     res.json({ success: false, error: error.message });
   }
 });
 
 /**
- * Enviar notificación
- * POST /api/notifications/send
+ * Enviar notificación (ACTUALIZADO con segmentación)
  */
 app.post('/api/notifications/send', async (req, res) => {
   try {
@@ -1973,103 +2249,61 @@ app.post('/api/notifications/send', async (req, res) => {
       title, 
       body, 
       image,
-      target_type,  // 'all', 'pueblo', 'categoria', 'tokens'
-      target_value, // pueblo_nombre, categoria_nombre, o array de tokens
-      action_type,  // 'open_home', 'open_entity', 'open_pueblo', 'open_category', 'open_url'
-      action_data   // { entity_id, entity_name, ... } o { url }
+      target_type = 'all',
+      segmentation = {},
+      action_type = 'open_home',
+      action_data = {},
     } = req.body;
     
     if (!title || !body) {
-      return res.json({ success: false, error: 'title y body son requeridos' });
+      return res.json({ success: false, error: 'Título y mensaje requeridos' });
     }
     
-    // Obtener tokens según el target
-    let tokens = [];
+    // Obtener tokens según segmentación
+    let tokens;
     
     if (target_type === 'all') {
-      const devices = await mongoDb.collection('device_tokens').find({}).toArray();
+      const devices = await deviceTokensCollection.find({ activo: true }).toArray();
       tokens = devices.map(d => d.token);
-    } else if (target_type === 'pueblo') {
-      const devices = await mongoDb.collection('device_tokens').find({ 
-        $or: [
-          { pueblo_preferido: target_value },
-          { pueblo_preferido: target_value?.toLowerCase() },
-          { pueblo_preferido: target_value?.toUpperCase() }
-        ]
-      }).toArray();
+    } else if (target_type === 'segmented') {
+      tokens = await getTokensWithSegmentation(segmentation);
+    } else if (target_type === 'test') {
+      tokens = ['test_token'];
+    } else {
+      const devices = await deviceTokensCollection.find({ activo: true }).toArray();
       tokens = devices.map(d => d.token);
-    } else if (target_type === 'categoria') {
-      const devices = await mongoDb.collection('device_tokens').find({ 
-        categorias_interes: { $in: [target_value, target_value?.toLowerCase()] }
-      }).toArray();
-      tokens = devices.map(d => d.token);
-    } else if (target_type === 'tokens' && Array.isArray(target_value)) {
-      tokens = target_value;
     }
     
     if (tokens.length === 0) {
-      return res.json({ success: false, error: 'No hay dispositivos registrados para enviar' });
+      return res.json({ 
+        success: true, 
+        message: 'No hay dispositivos registrados',
+        stats: { total: 0, exitosos: 0, fallidos: 0 }
+      });
     }
     
-    // Construir mensaje
-    const message = {
-      notification: {
-        title,
-        body,
-        ...(image && { image })
-      },
-      data: {
-        action: action_type || 'open_home',
-        click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        ...action_data
-      },
-      tokens: tokens
-    };
+    const notification = { title, body, image };
+    const fullActionData = { ...action_data, action_type };
     
-    // Enviar notificación
-    const response = await admin.messaging().sendEachForMulticast(message);
+    const result = await sendNotificationToTokens(tokens, notification, fullActionData);
     
     // Guardar en historial
-    const historyRecord = {
-      titulo: title,
-      mensaje: body,
-      imagen: image || null,
-      target_tipo: target_type,
-      target_valor: target_value || null,
-      action_tipo: action_type || 'open_home',
-      action_datos: action_data || {},
-      tokens_enviados: tokens.length,
-      enviados_exitosos: response.successCount,
-      enviados_fallidos: response.failureCount,
-      fecha_envio: new Date(),
-      responses: response.responses
-    };
-    
-    await mongoDb.collection('notifications_history').insertOne(historyRecord);
-    
-    // Limpiar tokens inválidos
-    if (response.failureCount > 0) {
-      const invalidTokens = [];
-      response.responses.forEach((resp, idx) => {
-        if (!resp.success && resp.error?.code === 'messaging/invalid-registration-token') {
-          invalidTokens.push(tokens[idx]);
-        }
-      });
-      
-      if (invalidTokens.length > 0) {
-        await mongoDb.collection('device_tokens').deleteMany({ token: { $in: invalidTokens } });
-        console.log(`🧹 Eliminados ${invalidTokens.length} tokens inválidos`);
-      }
-    }
+    await saveNotificationToHistory(
+      { ...notification, action_type, action_data, tipo: 'manual' },
+      result,
+      target_type,
+      segmentation
+    );
     
     res.json({
       success: true,
       message: 'Notificación enviada',
       stats: {
-        total: tokens.length,
-        exitosos: response.successCount,
-        fallidos: response.failureCount
-      }
+        total: result.total,
+        exitosos: result.exitosos,
+        fallidos: result.fallidos,
+      },
+      details: result.details.slice(0, 5),
     });
     
   } catch (error) {
@@ -2079,8 +2313,267 @@ app.post('/api/notifications/send', async (req, res) => {
 });
 
 /**
- * Obtener historial de notificaciones
- * GET /api/notifications/history
+ * Programar notificación (NUEVO)
+ */
+app.post('/api/notifications/schedule', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const {
+      title,
+      body,
+      image,
+      scheduled_date,
+      timezone = 'America/Bogota',
+      target_type = 'all',
+      segmentation = {},
+      action_type = 'open_home',
+      action_data = {},
+    } = req.body;
+    
+    if (!title || !body || !scheduled_date) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Título, mensaje y fecha programada son requeridos' 
+      });
+    }
+    
+    const scheduledDate = new Date(scheduled_date);
+    
+    if (scheduledDate <= new Date()) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'La fecha programada debe ser en el futuro' 
+      });
+    }
+    
+    const scheduledNotification = {
+      title,
+      body,
+      image: image || null,
+      scheduled_date: scheduledDate,
+      timezone,
+      target_type,
+      segmentation,
+      action_type,
+      action_data,
+      sent: false,
+      created_at: new Date(),
+    };
+    
+    const result = await scheduledNotificationsCollection.insertOne(scheduledNotification);
+    
+    res.json({
+      success: true,
+      message: 'Notificación programada correctamente',
+      scheduled_id: result.insertedId,
+      scheduled_date: scheduledDate.toISOString(),
+    });
+    
+  } catch (error) {
+    console.error('Error programando notificación:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener notificaciones programadas (NUEVO)
+ */
+app.get('/api/notifications/scheduled', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const scheduled = await scheduledNotificationsCollection
+      .find({ sent: false })
+      .sort({ scheduled_date: 1 })
+      .toArray();
+    
+    res.json({ success: true, data: scheduled });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Cancelar notificación programada (NUEVO)
+ */
+app.delete('/api/notifications/scheduled/:id', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const result = await scheduledNotificationsCollection.deleteOne({
+      _id: new ObjectId(req.params.id),
+      sent: false,
+    });
+    
+    if (result.deletedCount > 0) {
+      res.json({ success: true, message: 'Notificación cancelada' });
+    } else {
+      res.status(404).json({ success: false, error: 'Notificación no encontrada o ya enviada' });
+    }
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Crear notificación recurrente (NUEVO)
+ */
+app.post('/api/notifications/recurring', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const {
+      name,
+      title,
+      body,
+      image,
+      cron_expression,
+      timezone = 'America/Bogota',
+      target_type = 'all',
+      segmentation = {},
+      action_type = 'open_home',
+      action_data = {},
+      start_date,
+      end_date,
+    } = req.body;
+    
+    if (!name || !title || !body || !cron_expression) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Nombre, título, mensaje y expresión cron son requeridos' 
+      });
+    }
+    
+    // Validar expresión cron
+    if (!cron.validate(cron_expression)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Expresión cron inválida' 
+      });
+    }
+    
+    const recurringNotification = {
+      name,
+      title,
+      body,
+      image: image || null,
+      cron_expression,
+      timezone,
+      target_type,
+      segmentation,
+      action_type,
+      action_data,
+      start_date: start_date ? new Date(start_date) : null,
+      end_date: end_date ? new Date(end_date) : null,
+      active: true,
+      created_at: new Date(),
+      last_run: null,
+      next_run: null,
+      total_runs: 0,
+    };
+    
+    const result = await recurringNotificationsCollection.insertOne(recurringNotification);
+    
+    // Programar el job
+    scheduleRecurringJob(result.insertedId.toString(), recurringNotification);
+    
+    res.json({
+      success: true,
+      message: 'Notificación recurrente creada',
+      recurring_id: result.insertedId,
+      cron_expression,
+    });
+    
+  } catch (error) {
+    console.error('Error creando notificación recurrente:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener notificaciones recurrentes (NUEVO)
+ */
+app.get('/api/notifications/recurring', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const recurring = await recurringNotificationsCollection.find({}).toArray();
+    res.json({ success: true, data: recurring });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Activar/Desactivar notificación recurrente (NUEVO)
+ */
+app.patch('/api/notifications/recurring/:id/toggle', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const recurring = await recurringNotificationsCollection.findOne({
+      _id: new ObjectId(req.params.id),
+    });
+    
+    if (!recurring) {
+      return res.status(404).json({ success: false, error: 'Notificación no encontrada' });
+    }
+    
+    const newStatus = !recurring.active;
+    
+    await recurringNotificationsCollection.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { active: newStatus } }
+    );
+    
+    if (newStatus) {
+      scheduleRecurringJob(req.params.id, recurring);
+    }
+    
+    res.json({ 
+      success: true, 
+      message: newStatus ? 'Notificación activada' : 'Notificación desactivada',
+      active: newStatus,
+    });
+    
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Eliminar notificación recurrente (NUEVO)
+ */
+app.delete('/api/notifications/recurring/:id', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    await recurringNotificationsCollection.deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+    res.json({ success: true, message: 'Notificación recurrente eliminada' });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Historial de notificaciones
  */
 app.get('/api/notifications/history', async (req, res) => {
   try {
@@ -2090,7 +2583,7 @@ app.get('/api/notifications/history', async (req, res) => {
     
     const { limit = 20 } = req.query;
     
-    const history = await mongoDb.collection('notifications_history')
+    const history = await notificationsHistoryCollection
       .find({})
       .sort({ fecha_envio: -1 })
       .limit(parseInt(limit))
@@ -2104,8 +2597,7 @@ app.get('/api/notifications/history', async (req, res) => {
 });
 
 /**
- * Obtener estadísticas de notificaciones
- * GET /api/notifications/stats
+ * Estadísticas de notificaciones (ACTUALIZADO)
  */
 app.get('/api/notifications/stats', async (req, res) => {
   try {
@@ -2113,24 +2605,54 @@ app.get('/api/notifications/stats', async (req, res) => {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
     
-    const [totalDevices, totalNotifications, recentNotifications] = await Promise.all([
-      mongoDb.collection('device_tokens').countDocuments(),
-      mongoDb.collection('notifications_history').countDocuments(),
-      mongoDb.collection('notifications_history').aggregate([
-        { $match: { fecha_envio: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
-        { $group: { _id: null, totalEnviados: { $sum: '$tokens_enviados' }, totalExitosos: { $sum: '$enviados_exitosos' } } }
-      ]).toArray()
-    ]);
+    const totalDevices = await deviceTokensCollection.countDocuments({ activo: true });
+    const totalNotifications = await notificationsHistoryCollection.countDocuments();
     
-    const stats = recentNotifications[0] || { totalEnviados: 0, totalExitosos: 0 };
+    const last30Days = new Date();
+    last30Days.setDate(last30Days.getDate() - 30);
+    
+    const notifications30Days = await notificationsHistoryCollection.find({
+      fecha_envio: { $gte: last30Days }
+    }).toArray();
+    
+    const totalExitosos30Dias = notifications30Days.reduce((sum, n) => sum + (n.enviados_exitosos || 0), 0);
+    
+    const scheduledCount = await scheduledNotificationsCollection.countDocuments({ sent: false });
+    const recurringCount = await recurringNotificationsCollection.countDocuments({ active: true });
+    
+    const devicesByType = await deviceTokensCollection.aggregate([
+      { $match: { activo: true } },
+      { $group: { _id: '$device_type', count: { $sum: 1 } } }
+    ]).toArray();
+    
+    const popularPueblos = await deviceTokensCollection.aggregate([
+      { $unwind: '$preferencias.pueblos_interes' },
+      { $group: { _id: '$preferencias.pueblos_interes', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 }
+    ]).toArray();
+    
+    const popularCategories = await deviceTokensCollection.aggregate([
+      { $unwind: '$preferencias.categorias_interes' },
+      { $group: { _id: '$preferencias.categorias_interes', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 }
+    ]).toArray();
     
     res.json({
       success: true,
       data: {
         dispositivosRegistrados: totalDevices,
         notificacionesEnviadas: totalNotifications,
-        totalEnviados30Dias: stats.totalEnviados,
-        totalExitosos30Dias: stats.totalExitosos
+        totalExitosos30Dias,
+        notificacionesProgramadas: scheduledCount,
+        notificacionesRecurrentes: recurringCount,
+        dispositivosPorTipo: devicesByType.reduce((acc, d) => {
+          acc[d._id || 'unknown'] = d.count;
+          return acc;
+        }, {}),
+        pueblosPopulares: popularPueblos.map(p => ({ nombre: p._id, usuarios: p.count })),
+        categoriasPopulares: popularCategories.map(c => ({ nombre: c._id, usuarios: c.count })),
       }
     });
     
@@ -2140,8 +2662,124 @@ app.get('/api/notifications/stats', async (req, res) => {
 });
 
 /**
- * Eliminar token de dispositivo
- * DELETE /api/notifications/token/:token
+ * Datos dinámicos para el panel
+ */
+app.get('/api/notifications/dynamic-data', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { days = 30 } = req.query;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+    
+    // Obtener pueblos únicos de eventos
+    const pueblos = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate } } },
+      { $project: { pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] } } },
+      { $match: { pueblo: { $ne: null, $ne: '' } } },
+      { $group: { _id: '$pueblo', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+    
+    // Categorías predefinidas
+    const categorias = [
+      { id: 'restaurantes', nombre: 'Restaurantes' },
+      { id: 'hoteles', nombre: 'Hoteles' },
+      { id: 'cafes', nombre: 'Cafés' },
+      { id: 'atractivos', nombre: 'Atractivos' },
+      { id: 'artesanias', nombre: 'Artesanías' },
+      { id: 'tiendas', nombre: 'Tiendas' },
+      { id: 'ferias', nombre: 'Ferias' }
+    ];
+    
+    // Obtener entidades
+    const entidades = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate }, event_name: { $in: ['entity_clicked', 'entity_detail_view'] } } },
+      { $project: { 
+        entidad: '$data.entity_name', 
+        categoria: { $ifNull: ['$data.category_name', '$data.category_id'] },
+        pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] }
+      }},
+      { $match: { entidad: { $ne: null, $ne: '' } } },
+      { $group: { _id: { entidad: '$entidad', categoria: '$categoria', pueblo: '$pueblo' }, count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 100 }
+    ]).toArray();
+    
+    res.json({
+      success: true,
+      data: {
+        pueblos: pueblos.map(p => ({ nombre: p._id })),
+        categorias: categorias,
+        entidades: entidades.map(e => ({
+          nombre: e._id.entidad,
+          categoria: e._id.categoria,
+          pueblo: e._id.pueblo
+        })),
+      }
+    });
+    
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Test de notificación
+ */
+app.get('/api/notifications/test-send', async (req, res) => {
+  try {
+    if (!admin.apps.length) {
+      return res.json({ success: false, error: 'Firebase Admin no está inicializado' });
+    }
+    
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const devices = await deviceTokensCollection.find({ activo: true }).toArray();
+    const tokens = devices.map(d => d.token);
+    
+    if (tokens.length === 0) {
+      return res.json({ success: false, error: 'No hay dispositivos registrados' });
+    }
+    
+    const notification = {
+      title: 'TuristeandoAPP',
+      body: 'Esta es una notificación de prueba',
+    };
+    
+    const result = await sendNotificationToTokens(tokens, notification, { action_type: 'open_home' });
+    
+    // Guardar en historial
+    await saveNotificationToHistory(
+      { ...notification, tipo: 'manual' },
+      result,
+      'test',
+      {}
+    );
+    
+    res.json({
+      success: true,
+      message: 'Notificación enviada',
+      stats: {
+        total: result.total,
+        exitosos: result.exitosos,
+        fallidos: result.fallidos,
+      },
+      details: result.details,
+    });
+    
+  } catch (error) {
+    console.error('Error en test-send:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Eliminar token
  */
 app.delete('/api/notifications/token/:token', async (req, res) => {
   try {
@@ -2151,7 +2789,7 @@ app.delete('/api/notifications/token/:token', async (req, res) => {
     
     const { token } = req.params;
     
-    await mongoDb.collection('device_tokens').deleteOne({ token });
+    await deviceTokensCollection.deleteOne({ token });
     
     res.json({ success: true, message: 'Token eliminado' });
     
@@ -2161,546 +2799,12 @@ app.delete('/api/notifications/token/:token', async (req, res) => {
 });
 
 // ========================================
-// NUEVO: PANEL DE ADMINISTRACIÓN HTML
-// ========================================
-
-app.get('/admin', (req, res) => {
-  res.send(`
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel de Notificaciones - Turisteando</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; color: #fff; }
-        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
-        
-        .header { text-align: center; padding: 30px 0; }
-        .header h1 { font-size: 28px; margin-bottom: 8px; }
-        .header p { color: #8892b0; }
-        
-        .card { background: rgba(255,255,255,0.05); border-radius: 16px; padding: 24px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1); }
-        .card h2 { font-size: 18px; margin-bottom: 20px; color: #64ffda; display: flex; align-items: center; gap: 10px; }
-        
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
-        .stat-box { background: rgba(100,255,218,0.1); border-radius: 12px; padding: 20px; text-align: center; }
-        .stat-box .number { font-size: 32px; font-weight: 700; color: #64ffda; }
-        .stat-box .label { font-size: 12px; color: #8892b0; margin-top: 5px; }
-        
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; margin-bottom: 8px; font-size: 14px; color: #ccd6f6; }
-        .form-group input, .form-group textarea, .form-group select { 
-            width: 100%; padding: 12px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); 
-            background: rgba(255,255,255,0.05); color: #fff; font-size: 14px; font-family: inherit;
-        }
-        .form-group input:focus, .form-group textarea:focus, .form-group select:focus { 
-            outline: none; border-color: #64ffda; 
-        }
-        .form-group textarea { min-height: 80px; resize: vertical; }
-        
-        .radio-group { display: flex; flex-wrap: wrap; gap: 15px; }
-        .radio-item { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-        .radio-item input { width: 18px; height: 18px; }
-        
-        .select-group { margin-top: 15px; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; }
-        .select-group.hidden { display: none; }
-        
-        .btn { padding: 14px 28px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: all 0.3s; }
-        .btn-primary { background: #64ffda; color: #1a1a2e; }
-        .btn-primary:hover { background: #4cd9b4; transform: translateY(-2px); }
-        .btn-secondary { background: rgba(255,255,255,0.1); color: #fff; }
-        .btn-secondary:hover { background: rgba(255,255,255,0.2); }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        
-        .actions { display: flex; gap: 15px; justify-content: flex-end; margin-top: 20px; }
-        
-        .history-table { width: 100%; border-collapse: collapse; }
-        .history-table th, .history-table td { padding: 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
-        .history-table th { color: #64ffda; font-size: 12px; text-transform: uppercase; }
-        .history-table td { font-size: 14px; }
-        .history-table tr:hover { background: rgba(255,255,255,0.03); }
-        
-        .badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
-        .badge-success { background: rgba(100,255,218,0.2); color: #64ffda; }
-        .badge-info { background: rgba(100,149,237,0.2); color: #6495ed; }
-        
-        .loading { text-align: center; padding: 40px; color: #8892b0; }
-        .toast { position: fixed; bottom: 20px; right: 20px; padding: 16px 24px; border-radius: 8px; font-size: 14px; z-index: 1000; animation: slideIn 0.3s; }
-        .toast-success { background: #64ffda; color: #1a1a2e; }
-        .toast-error { background: #ff6b6b; color: #fff; }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        
-        .tab-buttons { display: flex; gap: 10px; margin-bottom: 20px; }
-        .tab-btn { padding: 10px 20px; border-radius: 8px; background: rgba(255,255,255,0.05); color: #8892b0; border: none; cursor: pointer; font-size: 14px; }
-        .tab-btn.active { background: #64ffda; color: #1a1a2e; }
-        
-        @media (max-width: 600px) {
-            .container { padding: 15px; }
-            .header h1 { font-size: 22px; }
-            .stats-grid { grid-template-columns: repeat(2, 1fr); }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔔 Panel de Notificaciones</h1>
-            <p>Gestiona las notificaciones push de TuristeandoAPP</p>
-        </div>
-        
-        <!-- Estadísticas -->
-        <div class="card">
-            <h2>📊 Estadísticas</h2>
-            <div class="stats-grid">
-                <div class="stat-box">
-                    <div class="number" id="stat-devices">-</div>
-                    <div class="label">Dispositivos</div>
-                </div>
-                <div class="stat-box">
-                    <div class="number" id="stat-sent">-</div>
-                    <div class="label">Enviadas</div>
-                </div>
-                <div class="stat-box">
-                    <div class="number" id="stat-monthly">-</div>
-                    <div class="label">Este mes</div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Tabs -->
-        <div class="tab-buttons">
-            <button class="tab-btn active" onclick="showTab('send')">📤 Enviar</button>
-            <button class="tab-btn" onclick="showTab('history')">📋 Historial</button>
-        </div>
-        
-        <!-- Formulario de envío -->
-        <div class="card" id="tab-send">
-            <h2>📝 Crear Notificación</h2>
-            
-            <div class="form-group">
-                <label>Título *</label>
-                <input type="text" id="title" placeholder="Ej: Nuevo evento en Villa de Leyva">
-            </div>
-            
-            <div class="form-group">
-                <label>Mensaje *</label>
-                <textarea id="body" placeholder="Ej: No te pierdas el festival gastronómico este fin de semana"></textarea>
-            </div>
-            
-            <div class="form-group">
-                <label>Imagen URL (opcional)</label>
-                <input type="text" id="image" placeholder="https://ejemplo.com/imagen.png">
-            </div>
-            
-            <div class="form-group">
-                <label>Enviar a</label>
-                <div class="radio-group">
-                    <label class="radio-item">
-                        <input type="radio" name="target" value="all" checked onchange="updateTargetFields()">
-                        Todos los usuarios
-                    </label>
-                    <label class="radio-item">
-                        <input type="radio" name="target" value="pueblo" onchange="updateTargetFields()">
-                        Por pueblo
-                    </label>
-                    <label class="radio-item">
-                        <input type="radio" name="target" value="categoria" onchange="updateTargetFields()">
-                        Por categoría
-                    </label>
-                </div>
-            </div>
-            
-            <div id="target-pueblo" class="select-group hidden">
-                <label>Pueblo</label>
-                <select id="select-pueblo"><option value="">Cargando pueblos...</option></select>
-            </div>
-            
-            <div id="target-categoria" class="select-group hidden">
-                <label>Categoría</label>
-                <select id="select-categoria"><option value="">Cargando categorías...</option></select>
-            </div>
-            
-            <div class="form-group">
-                <label>Al tocar la notificación</label>
-                <div class="radio-group">
-                    <label class="radio-item">
-                        <input type="radio" name="action" value="open_home" checked onchange="updateActionFields()">
-                        Pantalla principal
-                    </label>
-                    <label class="radio-item">
-                        <input type="radio" name="action" value="open_entity" onchange="updateActionFields()">
-                        Entidad específica
-                    </label>
-                    <label class="radio-item">
-                        <input type="radio" name="action" value="open_pueblo" onchange="updateActionFields()">
-                        Un pueblo
-                    </label>
-                    <label class="radio-item">
-                        <input type="radio" name="action" value="open_url" onchange="updateActionFields()">
-                        URL externa
-                    </label>
-                </div>
-            </div>
-            
-            <div id="action-entity" class="select-group hidden">
-                <label>Entidad</label>
-                <select id="select-entity"><option value="">Cargando entidades...</option></select>
-            </div>
-            
-            <div id="action-pueblo" class="select-group hidden">
-                <label>Pueblo</label>
-                <select id="select-action-pueblo"><option value="">Cargando pueblos...</option></select>
-            </div>
-            
-            <div id="action-url" class="select-group hidden">
-                <label>URL</label>
-                <input type="text" id="action-url-input" placeholder="https://ejemplo.com/pagina">
-            </div>
-            
-            <div class="actions">
-                <button class="btn btn-secondary" onclick="clearForm()">Limpiar</button>
-                <button class="btn btn-primary" id="btn-send" onclick="sendNotification()">📤 Enviar Notificación</button>
-            </div>
-        </div>
-        
-        <!-- Historial -->
-        <div class="card hidden" id="tab-history">
-            <h2>📋 Historial de Notificaciones</h2>
-            <table class="history-table">
-                <thead>
-                    <tr>
-                        <th>Fecha</th>
-                        <th>Título</th>
-                        <th>Destino</th>
-                        <th>Enviados</th>
-                        <th>Estado</th>
-                    </tr>
-                </thead>
-                <tbody id="history-body">
-                    <tr><td colspan="5" class="loading">Cargando historial...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    
-    <script>
-        // Variables globales
-        let dynamicData = { pueblos: [], categorias: [], entidades: [] };
-        const API_BASE = window.location.origin;
-        
-        // Cargar datos al iniciar
-        document.addEventListener('DOMContentLoaded', () => {
-            loadStats();
-            loadDynamicData();
-            loadHistory();
-        });
-        
-        // Cargar estadísticas
-        async function loadStats() {
-            try {
-                const res = await fetch(API_BASE + '/api/notifications/stats');
-                const data = await res.json();
-                if (data.success) {
-                    document.getElementById('stat-devices').textContent = data.data.dispositivosRegistrados;
-                    document.getElementById('stat-sent').textContent = data.data.notificacionesEnviadas;
-                    document.getElementById('stat-monthly').textContent = data.data.totalExitosos30Dias;
-                }
-            } catch (e) {
-                console.error('Error cargando stats:', e);
-            }
-        }
-        
-        // Cargar datos dinámicos (pueblos, categorías, entidades)
-        async function loadDynamicData() {
-            try {
-                const res = await fetch(API_BASE + '/api/notifications/dynamic-data?days=30');
-                const data = await res.json();
-                if (data.success) {
-                    dynamicData = data.data;
-                    
-                    // Poblar select de pueblos
-                    const puebloSelect = document.getElementById('select-pueblo');
-                    puebloSelect.innerHTML = '<option value="">Selecciona un pueblo</option>' +
-                        dynamicData.pueblos.map(p => '<option value="' + p.nombre + '">' + p.nombre + '</option>').join('');
-                    
-                    // Poblar select de categorías
-                    const categoriaSelect = document.getElementById('select-categoria');
-                    categoriaSelect.innerHTML = '<option value="">Selecciona una categoría</option>' +
-                        dynamicData.categorias.map(c => '<option value="' + c.nombre + '">' + c.nombre + '</option>').join('');
-                    
-                    // Poblar select de entidades
-                    const entitySelect = document.getElementById('select-entity');
-                    entitySelect.innerHTML = '<option value="">Selecciona una entidad</option>' +
-                        dynamicData.entidades.map(e => '<option value="' + e.nombre + '" data-categoria="' + e.categoria + '" data-pueblo="' + e.pueblo + '">' + e.nombre + '</option>').join('');
-                    
-                    // Poblar select de pueblos para acción
-                    const actionPuebloSelect = document.getElementById('select-action-pueblo');
-                    actionPuebloSelect.innerHTML = '<option value="">Selecciona un pueblo</option>' +
-                        dynamicData.pueblos.map(p => '<option value="' + p.nombre + '">' + p.nombre + '</option>').join('');
-                }
-            } catch (e) {
-                console.error('Error cargando datos dinámicos:', e);
-            }
-        }
-        
-        // Cargar historial
-        async function loadHistory() {
-            try {
-                const res = await fetch(API_BASE + '/api/notifications/history?limit=20');
-                const data = await res.json();
-                const tbody = document.getElementById('history-body');
-                
-                if (data.success && data.data.length > 0) {
-                    tbody.innerHTML = data.data.map(n => {
-                        const fecha = new Date(n.fecha_envio).toLocaleDateString('es-ES');
-                        const destino = n.target_tipo === 'all' ? 'Todos' : (n.target_valor || n.target_tipo);
-                        return '<tr>' +
-                            '<td>' + fecha + '</td>' +
-                            '<td>' + n.titulo.substring(0, 30) + (n.titulo.length > 30 ? '...' : '') + '</td>' +
-                            '<td>' + destino + '</td>' +
-                            '<td>' + n.enviados_exitosos + '/' + n.tokens_enviados + '</td>' +
-                            '<td><span class="badge badge-success">Enviado</span></td>' +
-                        '</tr>';
-                    }).join('');
-                } else {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8892b0;">No hay notificaciones enviadas</td></tr>';
-                }
-            } catch (e) {
-                console.error('Error cargando historial:', e);
-            }
-        }
-        
-        // Mostrar/ocultar campos según selección
-        function updateTargetFields() {
-            const target = document.querySelector('input[name="target"]:checked').value;
-            document.getElementById('target-pueblo').classList.toggle('hidden', target !== 'pueblo');
-            document.getElementById('target-categoria').classList.toggle('hidden', target !== 'categoria');
-        }
-        
-        function updateActionFields() {
-            const action = document.querySelector('input[name="action"]:checked').value;
-            document.getElementById('action-entity').classList.toggle('hidden', action !== 'open_entity');
-            document.getElementById('action-pueblo').classList.toggle('hidden', action !== 'open_pueblo');
-            document.getElementById('action-url').classList.toggle('hidden', action !== 'open_url');
-        }
-        
-        // Cambiar tabs
-        function showTab(tab) {
-            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            document.getElementById('tab-send').classList.toggle('hidden', tab !== 'send');
-            document.getElementById('tab-history').classList.toggle('hidden', tab !== 'history');
-            if (tab === 'history') loadHistory();
-        }
-        
-        // Enviar notificación
-        async function sendNotification() {
-            const title = document.getElementById('title').value.trim();
-            const body = document.getElementById('body').value.trim();
-            const image = document.getElementById('image').value.trim();
-            const targetType = document.querySelector('input[name="target"]:checked').value;
-            const actionType = document.querySelector('input[name="action"]:checked').value;
-            
-            if (!title || !body) {
-                showToast('Por favor completa el título y mensaje', 'error');
-                return;
-            }
-            
-            let targetValue = null;
-            if (targetType === 'pueblo') {
-                targetValue = document.getElementById('select-pueblo').value;
-                if (!targetValue) { showToast('Selecciona un pueblo', 'error'); return; }
-            } else if (targetType === 'categoria') {
-                targetValue = document.getElementById('select-categoria').value;
-                if (!targetValue) { showToast('Selecciona una categoría', 'error'); return; }
-            }
-            
-            let actionData = {};
-            if (actionType === 'open_entity') {
-                const entitySelect = document.getElementById('select-entity');
-                const selectedOption = entitySelect.options[entitySelect.selectedIndex];
-                if (!entitySelect.value) { showToast('Selecciona una entidad', 'error'); return; }
-                actionData = {
-                    entity_name: entitySelect.value,
-                    category: selectedOption.dataset.categoria || '',
-                    pueblo_id: selectedOption.dataset.pueblo || ''
-                };
-            } else if (actionType === 'open_pueblo') {
-                const puebloSelect = document.getElementById('select-action-pueblo');
-                if (!puebloSelect.value) { showToast('Selecciona un pueblo', 'error'); return; }
-                actionData = { pueblo_id: puebloSelect.value };
-            } else if (actionType === 'open_url') {
-                const url = document.getElementById('action-url-input').value.trim();
-                if (!url) { showToast('Ingresa una URL', 'error'); return; }
-                actionData = { url };
-            }
-            
-            const btn = document.getElementById('btn-send');
-            btn.disabled = true;
-            btn.textContent = '⏳ Enviando...';
-            
-            try {
-                const res = await fetch(API_BASE + '/api/notifications/send', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        title, body, image: image || null,
-                        target_type: targetType,
-                        target_value: targetValue,
-                        action_type: actionType,
-                        action_data: actionData
-                    })
-                });
-                
-                const data = await res.json();
-                
-                if (data.success) {
-                    showToast('✅ Notificación enviada a ' + data.stats.exitosos + ' dispositivos', 'success');
-                    clearForm();
-                    loadStats();
-                    loadHistory();
-                } else {
-                    showToast('Error: ' + data.error, 'error');
-                }
-            } catch (e) {
-                showToast('Error de conexión', 'error');
-            }
-            
-            btn.disabled = false;
-            btn.textContent = '📤 Enviar Notificación';
-        }
-        
-        // Limpiar formulario
-        function clearForm() {
-            document.getElementById('title').value = '';
-            document.getElementById('body').value = '';
-            document.getElementById('image').value = '';
-            document.querySelector('input[name="target"][value="all"]').checked = true;
-            document.querySelector('input[name="action"][value="open_home"]').checked = true;
-            updateTargetFields();
-            updateActionFields();
-        }
-        
-        // Mostrar toast
-        function showToast(message, type) {
-            const toast = document.createElement('div');
-            toast.className = 'toast toast-' + type;
-            toast.textContent = message;
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 4000);
-        }
-    </script>
-</body>
-</html>
-  `);
-});
-
-// ========================================
-// TEST: Enviar notificación de prueba (GET para fácil debugging)
-// ========================================
-app.get('/api/notifications/test-send', async (req, res) => {
-  try {
-    console.log('===== TEST SEND NOTIFICATION =====');
-    
-    // Verificar Firebase Admin
-    if (!admin.apps.length) {
-      console.log('❌ Firebase Admin NO inicializado');
-      return res.json({ 
-        success: false, 
-        error: 'Firebase Admin no inicializado',
-        hint: 'Verifica SERVICE_ACCOUNT_EMAIL y SERVICE_ACCOUNT_PRIVATE_KEY en variables de entorno'
-      });
-    }
-    console.log('✅ Firebase Admin OK');
-    
-    // Verificar MongoDB
-    if (!mongoDb) {
-      console.log('❌ MongoDB NO conectado');
-      return res.json({ success: false, error: 'MongoDB no conectado' });
-    }
-    console.log('✅ MongoDB OK');
-    
-    // Obtener tokens
-    const devices = await mongoDb.collection('device_tokens').find({}).toArray();
-    const tokens = devices.map(d => d.token).filter(t => t);
-    
-    console.log('📱 Tokens encontrados:', tokens.length);
-    
-    if (tokens.length === 0) {
-      return res.json({ success: false, error: 'No hay tokens registrados' });
-    }
-    
-    // Enviar notificación de prueba
-    const message = {
-      notification: {
-        title: 'Prueba Turisteando',
-        body: 'Esta es una notificación de prueba'
-      },
-      data: {
-        action: 'open_home',
-        title: 'Prueba Turisteando',
-        body: 'Esta es una notificación de prueba'
-      },
-      tokens: tokens
-    };
-    
-    console.log('📤 Enviando mensaje a', tokens.length, 'dispositivos...');
-    
-    const response = await admin.messaging().sendEachForMulticast(message);
-    
-    console.log('✅ Respuesta:', {
-      successCount: response.successCount,
-      failureCount: response.failureCount
-    });
-    
-    // Guardar en historial
-    await mongoDb.collection('notifications_history').insertOne({
-      titulo: 'Prueba Turisteando',
-      mensaje: 'Esta es una notificación de prueba',
-      tokens_enviados: tokens.length,
-      enviados_exitosos: response.successCount,
-      enviados_fallidos: response.failureCount,
-      fecha_envio: new Date()
-    });
-    
-    res.json({
-      success: true,
-      message: 'Notificación enviada',
-      stats: {
-        total: tokens.length,
-        exitosos: response.successCount,
-        fallidos: response.failureCount
-      },
-      details: response.responses.map((r, i) => ({
-        token: tokens[i].substring(0, 30) + '...',
-        success: r.success,
-        error: r.error?.message || null
-      }))
-    });
-    
-  } catch (error) {
-    console.error('❌ ERROR:', error);
-    res.json({ 
-      success: false, 
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
-
-
-
-// ========================================
 // INICIAR SERVIDOR
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v4.0 (Notifications) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v5.0 (Notifications Pro) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
-  console.log(`🖥️ Panel Admin: http://localhost:${PORT}/admin`);
 });
