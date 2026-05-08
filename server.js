@@ -3025,11 +3025,15 @@ app.get('/api/notifications/stats', async (req, res) => {
 // ========================================
 // ENDPOINT ACTUALIZADO: dynamic-data que lee desde Firestore
 // ========================================
+// ========================================
+// ENDPOINT ACTUALIZADO: dynamic-data que lee desde Firestore
+// EXPLORA TODAS LAS SUBCOLECCIONES, NO SOLO categorias_activas
+// ========================================
 app.get('/api/notifications/dynamic-data', async (req, res) => {
   try {
     // Si Firestore está disponible, leer datos dinámicos
     if (firestoreDb) {
-      console.log('📊 Leyendo datos dinámicos desde Firestore...');
+      console.log('📊 Leyendo datos dinámicos desde Firestore (explorando TODAS las subcolecciones)...');
       
       // 1. Obtener pueblos
       const pueblosSnapshot = await firestoreDb.collection('pueblos').get();
@@ -3038,7 +3042,8 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
       const categoriasSet = new Set();
       const entidades = [];
       
-      pueblosSnapshot.forEach(doc => {
+      // Procesar cada pueblo
+      for (const doc of pueblosSnapshot.docs) {
         const data = doc.data();
         const puebloId = doc.id;
         const nombrePueblo = data.nombre || puebloId;
@@ -3051,19 +3056,46 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
           categorias_activas: categoriasActivas
         });
         
-        // Recopilar categorías únicas
+        // Recopilar categorías de categorias_activas
         categoriasActivas.forEach(cat => categoriasSet.add(cat));
-      });
+        
+        // ============================================================
+        // NUEVO: EXPLORAR TODAS LAS SUBCOLECCIONES DEL PUEBLO
+        // Esto encuentra categorías que existen como subcolecciones
+        // pero que NO están listadas en categorias_activas
+        // ============================================================
+        try {
+          const subcollections = await firestoreDb
+            .collection('pueblos')
+            .doc(puebloId)
+            .listCollections();
+          
+          for (const subcol of subcollections) {
+            const subcolId = subcol.id;
+            // Agregar esta subcolección como categoría
+            categoriasSet.add(subcolId);
+            console.log(`  📂 Encontrada subcolección: ${puebloId}/${subcolId}`);
+          }
+        } catch (listError) {
+          console.log(`  ⚠️ No se pudieron listar subcolecciones de ${puebloId}: ${listError.message}`);
+        }
+      }
 
       // 2. Convertir categorías a formato para el dropdown
-      const categorias = Array.from(categoriasSet).map(cat => ({
-        id: normalizeId(cat),
-        nombre: cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' ')
-      }));
+      const categorias = Array.from(categoriasSet)
+        .sort() // Ordenar alfabéticamente
+        .map(cat => ({
+          id: normalizeId(cat),
+          nombre: cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' '),
+          original: cat // Guardar el nombre original también
+        }));
 
-      // 3. Obtener entidades (de los primeros pueblos)
-      for (const pueblo of pueblos.slice(0, 3)) {
-        for (const categoria of pueblo.categorias_activas.slice(0, 5)) {
+      // 3. Obtener entidades (de TODAS las categorías encontradas, no solo las primeras)
+      for (const pueblo of pueblos) {
+        // Obtener todas las categorías de este pueblo (de categorias_activas Y subcolecciones)
+        const categoriasDelPueblo = Array.from(categoriasSet);
+        
+        for (const categoria of categoriasDelPueblo) {
           const categoriaNormalizada = normalizeId(categoria);
           
           try {
@@ -3071,18 +3103,20 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
               .collection('pueblos')
               .doc(pueblo.id)
               .collection(categoriaNormalizada)
-              .limit(10)
+              .limit(5) // Reducir límite para no sobrecargar
               .get();
             
-            entidadesSnapshot.forEach(doc => {
-              const entityData = doc.data();
-              entidades.push({
-                id: doc.id,
-                nombre: entityData.nombre || doc.id,
-                categoria: categoriaNormalizada,
-                pueblo: pueblo.id
+            if (!entidadesSnapshot.empty) {
+              entidadesSnapshot.forEach(doc => {
+                const entityData = doc.data();
+                entidades.push({
+                  id: doc.id,
+                  nombre: entityData.nombre || doc.id,
+                  categoria: categoriaNormalizada,
+                  pueblo: pueblo.id
+                });
               });
-            });
+            }
           } catch (e) {
             // Ignorar errores de colecciones que no existen
           }
@@ -3090,6 +3124,7 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
       }
 
       console.log(`📊 Datos dinámicos desde Firestore: ${pueblos.length} pueblos, ${categorias.length} categorías, ${entidades.length} entidades`);
+      console.log(`📊 Categorías encontradas: ${categorias.map(c => c.id).join(', ')}`);
 
       return res.json({
         success: true,
@@ -3097,7 +3132,10 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
         data: {
           pueblos,
           categorias,
-          entidades
+          entidades,
+          total_categorias: categorias.length,
+          total_pueblos: pueblos.length,
+          total_entidades: entidades.length
         }
       });
     }
