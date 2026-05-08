@@ -48,6 +48,11 @@ let scheduledNotificationsCollection;
 let recurringNotificationsCollection;
 let userPreferencesCollection;
 
+// ========================================
+// NUEVO: Firestore Database
+// ========================================
+let firestoreDb;
+
 async function connectMongoDB() {
   if (!MONGO_URI) {
     console.log('⚠️ MONGODB_URI no configurado - MongoDB deshabilitado');
@@ -105,8 +110,47 @@ function initializeFirebaseAdmin() {
   }
 }
 
+// ========================================
+// NUEVO: Inicializar Firestore
+// ========================================
+function initializeFirestore() {
+  try {
+    if (admin.apps.length > 0) {
+      firestoreDb = admin.firestore();
+      console.log('✅ Firestore inicializado para datos dinámicos');
+      return true;
+    }
+    console.log('⚠️ Firestore no se pudo inicializar - Firebase Admin no está listo');
+    return false;
+  } catch (error) {
+    console.error('❌ Error inicializando Firestore:', error.message);
+    return false;
+  }
+}
+
 // Inicializar después de conectar MongoDB
 initializeFirebaseAdmin();
+// Inicializar Firestore después de Firebase Admin
+initializeFirestore();
+
+// ========================================
+// HELPER FUNCTION: Normalizar ID (igual que en Android)
+// ========================================
+function normalizeId(id) {
+  if (!id) return '';
+  
+  return id.toLowerCase()
+    .trim()
+    .replace(/á/g, 'a')
+    .replace(/é/g, 'e')
+    .replace(/í/g, 'i')
+    .replace(/ó/g, 'o')
+    .replace(/ú/g, 'u')
+    .replace(/ü/g, 'u')
+    .replace(/ñ/g, 'n')
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+}
 
 // ========================================
 // HELPER FUNCTIONS (tu código existente)
@@ -216,6 +260,322 @@ function calculateCorrectCategories(entidadesData) {
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
+});
+
+// ========================================
+// ========================================
+// NUEVO: ENDPOINTS FIRESTORE - DATOS DINÁMICOS
+// ========================================
+// ========================================
+
+/**
+ * Obtener TODOS los pueblos desde Firestore
+ */
+app.get('/api/firestore/pueblos', async (req, res) => {
+  try {
+    if (!firestoreDb) {
+      return res.json({ success: false, error: 'Firestore no está inicializado' });
+    }
+
+    const pueblosSnapshot = await firestoreDb.collection('pueblos').get();
+    
+    const pueblos = [];
+    pueblosSnapshot.forEach(doc => {
+      const data = doc.data();
+      pueblos.push({
+        id: doc.id,
+        nombre: data.nombre || doc.id,
+        categorias_activas: data.categorias_activas || [],
+        imagen: data.imagen || null,
+        descripcion: data.descripcion || null
+      });
+    });
+
+    console.log(`✅ Obtenidos ${pueblos.length} pueblos desde Firestore`);
+    
+    res.json({
+      success: true,
+      data: pueblos
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo pueblos:', error.message);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener TODAS las categorías únicas desde Firestore
+ * Lee las categorias_activas de cada pueblo y las combina
+ */
+app.get('/api/firestore/categorias', async (req, res) => {
+  try {
+    if (!firestoreDb) {
+      return res.json({ success: false, error: 'Firestore no está inicializado' });
+    }
+
+    const pueblosSnapshot = await firestoreDb.collection('pueblos').get();
+    
+    // Recopilar todas las categorías únicas de todos los pueblos
+    const categoriasSet = new Set();
+    
+    pueblosSnapshot.forEach(doc => {
+      const data = doc.data();
+      const categoriasActivas = data.categorias_activas || [];
+      categoriasActivas.forEach(cat => categoriasSet.add(cat));
+    });
+
+    // Convertir a array con formato
+    const categorias = Array.from(categoriasSet).map(cat => ({
+      id: normalizeId(cat),
+      nombre: cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' ')
+    }));
+
+    console.log(`✅ Obtenidas ${categorias.length} categorías únicas desde Firestore:`, categorias.map(c => c.id));
+    
+    res.json({
+      success: true,
+      data: categorias
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo categorías:', error.message);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener categorías de un pueblo específico
+ */
+app.get('/api/firestore/pueblos/:puebloId/categorias', async (req, res) => {
+  try {
+    if (!firestoreDb) {
+      return res.json({ success: false, error: 'Firestore no está inicializado' });
+    }
+
+    const { puebloId } = req.params;
+    const puebloIdNormalizado = normalizeId(puebloId);
+    
+    const puebloDoc = await firestoreDb.collection('pueblos').doc(puebloIdNormalizado).get();
+    
+    if (!puebloDoc.exists) {
+      return res.json({ success: false, error: 'Pueblo no encontrado' });
+    }
+
+    const data = puebloDoc.data();
+    const categoriasActivas = data.categorias_activas || [];
+    
+    const categorias = categoriasActivas.map(cat => ({
+      id: normalizeId(cat),
+      nombre: cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' ')
+    }));
+
+    res.json({
+      success: true,
+      pueblo: puebloIdNormalizado,
+      data: categorias
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo categorías del pueblo:', error.message);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener entidades de una categoría específica en un pueblo
+ */
+app.get('/api/firestore/pueblos/:puebloId/categorias/:categoriaId/entidades', async (req, res) => {
+  try {
+    if (!firestoreDb) {
+      return res.json({ success: false, error: 'Firestore no está inicializado' });
+    }
+
+    const { puebloId, categoriaId } = req.params;
+    
+    // Normalizar IDs
+    const puebloIdNormalizado = normalizeId(puebloId);
+    const categoriaNormalizada = normalizeId(categoriaId);
+    
+    const entidadesSnapshot = await firestoreDb
+      .collection('pueblos')
+      .doc(puebloIdNormalizado)
+      .collection(categoriaNormalizada)
+      .get();
+    
+    const entidades = [];
+    entidadesSnapshot.forEach(doc => {
+      const data = doc.data();
+      entidades.push({
+        id: doc.id,
+        nombre: data.nombre || doc.id,
+        categoria: categoriaNormalizada,
+        pueblo: puebloIdNormalizado,
+        imagen: data.imagen || data.imagen_principal || null,
+        descripcion: data.descripcion || null
+      });
+    });
+
+    res.json({
+      success: true,
+      pueblo: puebloIdNormalizado,
+      categoria: categoriaNormalizada,
+      data: entidades
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo entidades:', error.message);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Obtener TODAS las entidades de un pueblo (de todas sus categorías)
+ */
+app.get('/api/firestore/pueblos/:puebloId/entidades', async (req, res) => {
+  try {
+    if (!firestoreDb) {
+      return res.json({ success: false, error: 'Firestore no está inicializado' });
+    }
+
+    const { puebloId } = req.params;
+    const puebloIdNormalizado = normalizeId(puebloId);
+    
+    // Primero obtener las categorías activas del pueblo
+    const puebloDoc = await firestoreDb.collection('pueblos').doc(puebloIdNormalizado).get();
+    
+    if (!puebloDoc.exists) {
+      return res.json({ success: false, error: 'Pueblo no encontrado' });
+    }
+
+    const data = puebloDoc.data();
+    const categoriasActivas = data.categorias_activas || [];
+    
+    const entidades = [];
+    
+    // Obtener entidades de cada categoría
+    for (const categoria of categoriasActivas) {
+      const categoriaNormalizada = normalizeId(categoria);
+      
+      try {
+        const entidadesSnapshot = await firestoreDb
+          .collection('pueblos')
+          .doc(puebloIdNormalizado)
+          .collection(categoriaNormalizada)
+          .limit(50)
+          .get();
+        
+        entidadesSnapshot.forEach(doc => {
+          const entityData = doc.data();
+          entidades.push({
+            id: doc.id,
+            nombre: entityData.nombre || doc.id,
+            categoria: categoriaNormalizada,
+            pueblo: puebloIdNormalizado,
+            imagen: entityData.imagen || entityData.imagen_principal || null
+          });
+        });
+      } catch (e) {
+        console.log(`⚠️ No se pudo leer categoría ${categoriaNormalizada}:`, e.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      pueblo: puebloIdNormalizado,
+      total: entidades.length,
+      data: entidades
+    });
+
+  } catch (error) {
+    console.error('❌ Error obteniendo entidades del pueblo:', error.message);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Buscar entidad por nombre (con normalización)
+ */
+app.get('/api/firestore/buscar-entidad', async (req, res) => {
+  try {
+    if (!firestoreDb) {
+      return res.json({ success: false, error: 'Firestore no está inicializado' });
+    }
+
+    const { nombre, pueblo, categoria } = req.query;
+    
+    if (!nombre) {
+      return res.json({ success: false, error: 'Nombre requerido' });
+    }
+
+    const nombreNormalizado = normalizeId(nombre);
+    const puebloId = pueblo ? normalizeId(pueblo) : null;
+    const categoriaId = categoria ? normalizeId(categoria) : null;
+
+    // Si tenemos pueblo y categoría específicos
+    if (puebloId && categoriaId) {
+      const entidadDoc = await firestoreDb
+        .collection('pueblos')
+        .doc(puebloId)
+        .collection(categoriaId)
+        .doc(nombreNormalizado)
+        .get();
+      
+      if (entidadDoc.exists) {
+        return res.json({
+          success: true,
+          data: {
+            id: entidadDoc.id,
+            ...entidadDoc.data(),
+            pueblo: puebloId,
+            categoria: categoriaId
+          }
+        });
+      }
+    }
+
+    // Si solo tenemos el pueblo, buscar en todas las categorías
+    if (puebloId) {
+      const puebloDoc = await firestoreDb.collection('pueblos').doc(puebloId).get();
+      
+      if (puebloDoc.exists) {
+        const categoriasActivas = puebloDoc.data().categorias_activas || [];
+        
+        for (const cat of categoriasActivas) {
+          const catNormalizada = normalizeId(cat);
+          
+          const entidadDoc = await firestoreDb
+            .collection('pueblos')
+            .doc(puebloId)
+            .collection(catNormalizada)
+            .doc(nombreNormalizado)
+            .get();
+          
+          if (entidadDoc.exists) {
+            return res.json({
+              success: true,
+              data: {
+                id: entidadDoc.id,
+                ...entidadDoc.data(),
+                pueblo: puebloId,
+                categoria: catNormalizada
+              }
+            });
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: false,
+      error: 'Entidad no encontrada',
+      busqueda: { nombre: nombreNormalizado, pueblo: puebloId, categoria: categoriaId }
+    });
+
+  } catch (error) {
+    console.error('❌ Error buscando entidad:', error.message);
+    res.json({ success: false, error: error.message });
+  }
 });
 
 // ========================================
@@ -547,7 +907,8 @@ app.get('/api/health', (req, res) => {
     propertyId: PROPERTY_ID,
     mongodb: mongoDb ? 'connected' : 'disconnected',
     firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
-    version: '5.0.0-notifications-pro'
+    firestore: firestoreDb ? 'initialized' : 'not initialized',
+    version: '5.1.0-notifications-pro-firestore'
   });
 });
 
@@ -2661,14 +3022,92 @@ app.get('/api/notifications/stats', async (req, res) => {
   }
 });
 
-/**
- * Datos dinámicos para el panel
- */
+// ========================================
+// ENDPOINT ACTUALIZADO: dynamic-data que lee desde Firestore
+// ========================================
 app.get('/api/notifications/dynamic-data', async (req, res) => {
   try {
-    if (!mongoDb) {
-      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    // Si Firestore está disponible, leer datos dinámicos
+    if (firestoreDb) {
+      console.log('📊 Leyendo datos dinámicos desde Firestore...');
+      
+      // 1. Obtener pueblos
+      const pueblosSnapshot = await firestoreDb.collection('pueblos').get();
+      
+      const pueblos = [];
+      const categoriasSet = new Set();
+      const entidades = [];
+      
+      pueblosSnapshot.forEach(doc => {
+        const data = doc.data();
+        const puebloId = doc.id;
+        const nombrePueblo = data.nombre || puebloId;
+        const categoriasActivas = data.categorias_activas || [];
+        
+        // Agregar pueblo a la lista
+        pueblos.push({
+          id: puebloId,
+          nombre: nombrePueblo,
+          categorias_activas: categoriasActivas
+        });
+        
+        // Recopilar categorías únicas
+        categoriasActivas.forEach(cat => categoriasSet.add(cat));
+      });
+
+      // 2. Convertir categorías a formato para el dropdown
+      const categorias = Array.from(categoriasSet).map(cat => ({
+        id: normalizeId(cat),
+        nombre: cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' ')
+      }));
+
+      // 3. Obtener entidades (de los primeros pueblos)
+      for (const pueblo of pueblos.slice(0, 3)) {
+        for (const categoria of pueblo.categorias_activas.slice(0, 5)) {
+          const categoriaNormalizada = normalizeId(categoria);
+          
+          try {
+            const entidadesSnapshot = await firestoreDb
+              .collection('pueblos')
+              .doc(pueblo.id)
+              .collection(categoriaNormalizada)
+              .limit(10)
+              .get();
+            
+            entidadesSnapshot.forEach(doc => {
+              const entityData = doc.data();
+              entidades.push({
+                id: doc.id,
+                nombre: entityData.nombre || doc.id,
+                categoria: categoriaNormalizada,
+                pueblo: pueblo.id
+              });
+            });
+          } catch (e) {
+            // Ignorar errores de colecciones que no existen
+          }
+        }
+      }
+
+      console.log(`📊 Datos dinámicos desde Firestore: ${pueblos.length} pueblos, ${categorias.length} categorías, ${entidades.length} entidades`);
+
+      return res.json({
+        success: true,
+        source: 'firestore',
+        data: {
+          pueblos,
+          categorias,
+          entidades
+        }
+      });
     }
+    
+    // Fallback a MongoDB si Firestore no está disponible
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'Ni Firestore ni MongoDB están disponibles' });
+    }
+    
+    console.log('📊 Firestore no disponible, usando MongoDB como fallback...');
     
     const { days = 30 } = req.query;
     const startDate = new Date();
@@ -2683,16 +3122,15 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
       { $sort: { count: -1 } }
     ]).toArray();
     
-    // Categorías predefinidas
-    const categorias = [
-      { id: 'restaurantes', nombre: 'Restaurantes' },
-      { id: 'hoteles', nombre: 'Hoteles' },
-      { id: 'cafes', nombre: 'Cafés' },
-      { id: 'atractivos', nombre: 'Atractivos' },
-      { id: 'artesanias', nombre: 'Artesanías' },
-      { id: 'tiendas', nombre: 'Tiendas' },
-      { id: 'ferias', nombre: 'Ferias' }
-    ];
+    // Categorías desde MongoDB
+    const categoriasMongo = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: startDate } } },
+      { $project: { categoria: { $ifNull: ['$data.category_name', '$data.category_id'] } } },
+      { $match: { categoria: { $ne: null, $ne: '' } } },
+      { $group: { _id: '$categoria', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 20 }
+    ]).toArray();
     
     // Obtener entidades
     const entidades = await mongoDb.collection('events').aggregate([
@@ -2710,10 +3148,12 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
     
     res.json({
       success: true,
+      source: 'mongodb',
       data: {
-        pueblos: pueblos.map(p => ({ nombre: p._id })),
-        categorias: categorias,
+        pueblos: pueblos.map(p => ({ id: normalizeId(p._id), nombre: p._id })),
+        categorias: categoriasMongo.map(c => ({ id: normalizeId(c._id), nombre: c._id })),
         entidades: entidades.map(e => ({
+          id: normalizeId(e._id.entidad),
           nombre: e._id.entidad,
           categoria: e._id.categoria,
           pueblo: e._id.pueblo
@@ -2722,6 +3162,7 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
     });
     
   } catch (error) {
+    console.error('❌ Error en dynamic-data:', error.message);
     res.json({ success: false, error: error.message });
   }
 });
@@ -2803,8 +3244,9 @@ app.delete('/api/notifications/token/:token', async (req, res) => {
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v5.0 (Notifications Pro) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v5.1.0 (Notifications Pro + Firestore) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
+  console.log(`🔥 Firestore: ${firestoreDb ? 'Inicializado' : 'No configurado'}`);
 });
