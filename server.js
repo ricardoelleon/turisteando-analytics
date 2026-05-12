@@ -957,7 +957,7 @@ app.get('/api/health', (req, res) => {
     mongodb: mongoDb ? 'connected' : 'disconnected',
     firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
     firestore: firestoreDb ? 'initialized' : 'not initialized',
-    version: '5.1.0-notifications-pro-firestore'
+    version: '5.2.0-notifications-pro-firestore-timezone-fix'
   });
 });
 
@@ -2723,7 +2723,7 @@ app.post('/api/notifications/send', async (req, res) => {
 });
 
 /**
- * Programar notificación (NUEVO)
+ * Programar notificación (CORREGIDO CON ZONA HORARIA)
  */
 app.post('/api/notifications/schedule', async (req, res) => {
   try {
@@ -2750,14 +2750,55 @@ app.post('/api/notifications/schedule', async (req, res) => {
       });
     }
     
-    const scheduledDate = new Date(scheduled_date);
-    const now = new Date();
-    const minTime = new Date(now.getTime() + 60 * 1000); // Mínimo 1 minuto en el futuro
+    // ========================================
+    // CORRECCIÓN DE ZONA HORARIA PARA COLOMBIA
+    // La fecha viene en formato local (ej: "2026-05-12T10:00:00")
+    // Debemos interpretarla en la zona horaria de Colombia (America/Bogota = UTC-5)
+    // ========================================
+    let scheduledDate;
     
-    if (scheduledDate < minTime) {
+    // Verificar si la fecha viene sin zona horaria (formato: YYYY-MM-DDTHH:MM:SS)
+    const hasTimezone = scheduled_date.includes('Z') || 
+                        scheduled_date.includes('+') || 
+                        (scheduled_date.lastIndexOf('-') > 10); // '-' después de la fecha (posición > 10)
+    
+    if (!hasTimezone) {
+      // Agregar offset de Colombia (UTC-5)
+      // "2026-05-12T10:00:00" -> "2026-05-12T10:00:00-05:00"
+      // JavaScript automáticamente convierte esto a UTC correctamente
+      const dateWithTimezone = scheduled_date + '-05:00';
+      scheduledDate = new Date(dateWithTimezone);
+      console.log(`📅 Fecha recibida: ${scheduled_date} (Colombia UTC-5)`);
+      console.log(`📅 Convertida a UTC: ${scheduledDate.toISOString()}`);
+    } else {
+      // Si ya viene con zona horaria o es un ISO string completo, usarla directamente
+      scheduledDate = new Date(scheduled_date);
+      console.log(`📅 Fecha recibida con zona horaria: ${scheduled_date}`);
+      console.log(`📅 Interpretada como: ${scheduledDate.toISOString()}`);
+    }
+    
+    // Verificar que la fecha es válida
+    if (isNaN(scheduledDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
-        error: 'La fecha programada debe ser al menos 1 minuto en el futuro' 
+        error: 'Formato de fecha inválido' 
+      });
+    }
+    
+    const now = new Date();
+    // Reducir el mínimo a 30 segundos para más flexibilidad
+    const minTime = new Date(now.getTime() + 30 * 1000);
+    
+    console.log(`⏰ Ahora (UTC): ${now.toISOString()}`);
+    console.log(`⏰ Mínimo permitido: ${minTime.toISOString()}`);
+    console.log(`⏰ Fecha programada: ${scheduledDate.toISOString()}`);
+    console.log(`⏰ Diferencia: ${Math.round((scheduledDate - now) / 1000 / 60)} minutos`);
+    
+    if (scheduledDate < minTime) {
+      const diffMinutes = Math.round((scheduledDate - now) / 1000 / 60);
+      return res.status(400).json({ 
+        success: false, 
+        error: `La fecha programada debe ser en el futuro. Tu selección es ${Math.abs(diffMinutes)} minutos ${diffMinutes < 0 ? 'en el pasado' : 'muy cercana'}. Intenta con al menos 1 minuto de anticipación.` 
       });
     }
     
@@ -2782,6 +2823,7 @@ app.post('/api/notifications/schedule', async (req, res) => {
       message: 'Notificación programada correctamente',
       scheduled_id: result.insertedId,
       scheduled_date: scheduledDate.toISOString(),
+      scheduled_date_local: scheduled_date,
     });
     
   } catch (error) {
@@ -3333,9 +3375,10 @@ app.delete('/api/notifications/token/:token', async (req, res) => {
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v5.1.0 (Notifications Pro + Firestore) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v5.2.0 (Notifications Pro + Firestore + Timezone Fix) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
   console.log(`🔥 Firestore: ${firestoreDb ? 'Inicializado' : 'No configurado'}`);
+  console.log(`🕐 Timezone Fix: Colombia (UTC-5) habilitado`);
 });
