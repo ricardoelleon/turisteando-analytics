@@ -966,45 +966,19 @@ async function getTokensWithSegmentation(segmentation = {}) {
     }
     
     // Si encontramos tokens por actividad, usarlos directamente
+// Si encontramos tokens por actividad, buscarlos en device_tokens
 if (tokensPorActividad.size > 0) {
   const tokensArray = Array.from(tokensPorActividad);
   console.log(`📊 Total tokens únicos por actividad: ${tokensArray.length}`);
   
-  // Buscar en device_tokens
   devices = await deviceTokensCollection.find({
     token: { $in: tokensArray },
     activo: true
   }).toArray();
   
-  console.log(`📊 Tokens en device_tokens: ${devices.length}`);
-  
-  // 🔑 CRÍTICO: Si no están en device_tokens, usar los tokens de eventos directamente
-  if (devices.length === 0) {
-    console.log('⚠️ Tokens NO registrados en device_tokens, usando tokens de eventos directamente');
-    devices = tokensArray.map(token => ({
-      token: token,
-      activo: true,
-      source: 'events_direct'
-    }));
-    console.log(`📊 Tokens de eventos utilizados directamente: ${devices.length}`);
-  } else if (devices.length < tokensArray.length) {
-    // Si algunos están registrados pero otros no, agregar los que faltan
-    const registeredTokens = new Set(devices.map(d => d.token));
-    const missingTokens = tokensArray.filter(t => !registeredTokens.has(t));
-    
-    if (missingTokens.length > 0) {
-      console.log(`⚠️ Agregando ${missingTokens.length} tokens adicionales desde eventos`);
-      missingTokens.forEach(token => {
-        devices.push({
-          token: token,
-          activo: true,
-          source: 'events_fallback'
-        });
-      });
-    }
-  }
+  console.log(`📊 Tokens activos encontrados: ${devices.length}`);
 }
-  
+    
   // ESTRATEGIA 3: Búsqueda directa en eventos si aún no hay resultados
   if (devices.length === 0 && mongoDb && (segmentation.pueblos?.length > 0 || segmentation.categorias?.length > 0 || segmentation.entidades?.length > 0)) {
     console.log('🔍 Buscando tokens directamente en eventos...');
