@@ -2751,11 +2751,13 @@ app.post('/api/notifications/schedule', async (req, res) => {
     }
     
     const scheduledDate = new Date(scheduled_date);
+    const now = new Date();
+    const minTime = new Date(now.getTime() + 60 * 1000); // Mínimo 1 minuto en el futuro
     
-    if (scheduledDate <= new Date()) {
+    if (scheduledDate < minTime) {
       return res.status(400).json({ 
         success: false, 
-        error: 'La fecha programada debe ser en el futuro' 
+        error: 'La fecha programada debe ser al menos 1 minuto en el futuro' 
       });
     }
     
