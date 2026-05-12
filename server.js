@@ -762,25 +762,78 @@ async function getTokensWithSegmentation(segmentation = {}) {
     const tokensPorActividad = new Set();
     
     // ========================================
+    // FUNCIÓN HELPER: Generar todas las variantes de un nombre
+    // ========================================
+    const generateVariants = (name) => {
+      if (!name) return [];
+      
+      const variants = new Set();
+      
+      // 1. Original
+      variants.add(name);
+      
+      // 2. Lowercase
+      variants.add(name.toLowerCase());
+      
+      // 3. Uppercase
+      variants.add(name.toUpperCase());
+      
+      // 4. Primera letra mayúscula
+      variants.add(name.charAt(0).toUpperCase() + name.slice(1).toLowerCase());
+      
+      // 5. Normalizado (sin tildes, espacios = guiones bajos)
+      const normalized = name.toLowerCase()
+        .trim()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Quitar tildes
+        .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+        .replace(/ó/g, 'o').replace(/ú/g, 'u').replace(/ü/g, 'u')
+        .replace(/ñ/g, 'n')
+        .replace(/\s+/g, '_')
+        .replace(/[^a-z0-9_]/g, '');
+      
+      variants.add(normalized);
+      
+      // 6. Normalizado con espacios (villa de leyva)
+      variants.add(normalized.replace(/_/g, ' '));
+      
+      // 7. Normalizado con primera letra mayúscula
+      variants.add(normalized.charAt(0).toUpperCase() + normalized.slice(1));
+      
+      // 8. Con espacios y primera letra mayúscula (Villa de leyva)
+      variants.add(normalized.replace(/_/g, ' ').charAt(0).toUpperCase() + normalized.replace(/_/g, ' ').slice(1));
+      
+      // 9. Título case (Villa De Leyva)
+      const titleCase = normalized.replace(/_/g, ' ').split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+      variants.add(titleCase);
+      
+      // 10. Screen name (villa_de_leyvaScreen)
+      variants.add(normalized + 'Screen');
+      
+      // 11. Screen name con título (Villa_De_leyvaScreen)
+      variants.add(normalized.charAt(0).toUpperCase() + normalized.slice(1) + 'Screen');
+      
+      // 12. Sin guiones bajos (villadeleyva)
+      variants.add(normalized.replace(/_/g, ''));
+      
+      // 13. Sin guiones bajos Screen (villadeleyvaScreen)
+      variants.add(normalized.replace(/_/g, '') + 'Screen');
+      
+      return Array.from(variants).filter(v => v && v.length > 0);
+    };
+    
+    // ========================================
     // NUEVO: Buscar usuarios que han interactuado con ENTIDADES/SITIOS específicos
     // ========================================
     if (segmentation.entidades && segmentation.entidades.length > 0) {
-      const entidadesBusqueda = segmentation.entidades.map(e => {
-        const normalized = normalizeId(e);
-        return [
-          normalized,
-          e.toLowerCase(),
-          e.charAt(0).toUpperCase() + e.slice(1),
-          e
-        ];
-      }).flat();
+      const entidadesBusqueda = segmentation.entidades.flatMap(e => generateVariants(e));
       
       console.log('🏢 Buscando actividad en entidades/sitios:', entidadesBusqueda);
       
       const fechaLimite = new Date();
       fechaLimite.setDate(fechaLimite.getDate() - 90);
       
-      // Buscar tokens que han interactuado con estas entidades
       const eventosEntidades = await mongoDb.collection('events').aggregate([
         {
           $match: {
@@ -814,23 +867,29 @@ async function getTokensWithSegmentation(segmentation = {}) {
       console.log(`📊 Tokens encontrados por actividad en entidades: ${eventosEntidades.length}`);
     }
     
-    // Buscar usuarios que han visitado pueblos específicos
+    // ========================================
+    // Buscar usuarios que han visitado PUEBLOS específicos (DINÁMICO)
+    // ========================================
     if (segmentation.pueblos && segmentation.pueblos.length > 0) {
-      const pueblosBusqueda = segmentation.pueblos.map(p => {
-        const normalized = normalizeId(p);
-        return [
-          normalized,
-          p.toLowerCase(),
-          p.charAt(0).toUpperCase() + p.slice(1),
-          p.toUpperCase(),
-          p
-        ];
-      }).flat();
+      // Generar variantes para cada pueblo
+      const pueblosBusqueda = segmentation.pueblos.flatMap(p => generateVariants(p));
       
-      console.log('🏘️ Buscando actividad en pueblos:', pueblosBusqueda);
+      console.log('🏘️ Buscando actividad en pueblos:', [...new Set(pueblosBusqueda)]);
       
       const fechaLimite = new Date();
       fechaLimite.setDate(fechaLimite.getDate() - 90);
+      
+      // Generar patrones regex para screen_name dinámicamente
+      const screenPatterns = segmentation.pueblos.map(p => {
+        const normalized = p.toLowerCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+          .replace(/ó/g, 'o').replace(/ú/g, 'u').replace(/ü/g, 'u')
+          .replace(/ñ/g, 'n')
+          .replace(/\s+/g, '_')
+          .replace(/[^a-z0-9_]/g, '');
+        return normalized + 'Screen';
+      });
       
       const eventosPueblos = await mongoDb.collection('events').aggregate([
         {
@@ -840,7 +899,10 @@ async function getTokensWithSegmentation(segmentation = {}) {
               { 'data.pueblo_id': { $in: pueblosBusqueda } },
               { 'data.pueblo_nombre': { $in: pueblosBusqueda } },
               { 'data.pueblo': { $in: pueblosBusqueda } },
-              { 'data.town_name': { $in: pueblosBusqueda } }
+              { 'data.town_name': { $in: pueblosBusqueda } },
+              { 'data.screen_name': { $in: pueblosBusqueda } },
+              // Regex dinámico para screen_name
+              { 'data.screen_name': { $regex: new RegExp(screenPatterns.join('|'), 'i') } }
             ]
           }
         },
@@ -862,20 +924,11 @@ async function getTokensWithSegmentation(segmentation = {}) {
       console.log(`📊 Tokens encontrados por actividad en pueblos: ${eventosPueblos.length}`);
     }
     
-    // Buscar usuarios que han interactuado con categorías específicas
+    // ========================================
+    // Buscar usuarios que han interactuado con CATEGORÍAS específicas
+    // ========================================
     if (segmentation.categorias && segmentation.categorias.length > 0) {
-      const categoriasBusqueda = segmentation.categorias.map(c => {
-        const normalized = normalizeId(c);
-        return [
-          normalized,
-          c.toLowerCase(),
-          c.charAt(0).toUpperCase() + c.slice(1),
-          c.toUpperCase(),
-          c,
-          normalized.replace(/_/g, ' '),
-          normalized.replace(/_/g, ' ').charAt(0).toUpperCase() + normalized.replace(/_/g, ' ').slice(1)
-        ];
-      }).flat();
+      const categoriasBusqueda = segmentation.categorias.flatMap(c => generateVariants(c));
       
       console.log('📂 Buscando actividad en categorías:', categoriasBusqueda);
       
@@ -935,38 +988,75 @@ async function getTokensWithSegmentation(segmentation = {}) {
     
     const orConditions = [];
     
+    // Helper para generar variantes (reutilizado)
+    const generateVariants = (name) => {
+      if (!name) return [];
+      
+      const variants = new Set();
+      variants.add(name);
+      variants.add(name.toLowerCase());
+      variants.add(name.toUpperCase());
+      
+      const normalized = name.toLowerCase()
+        .trim()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+        .replace(/ó/g, 'o').replace(/ú/g, 'u').replace(/ü/g, 'u')
+        .replace(/ñ/g, 'n')
+        .replace(/\s+/g, '_')
+        .replace(/[^a-z0-9_]/g, '');
+      
+      variants.add(normalized);
+      variants.add(normalized.replace(/_/g, ' '));
+      variants.add(normalized + 'Screen');
+      
+      return Array.from(variants).filter(v => v && v.length > 0);
+    };
+    
     if (segmentation.pueblos && segmentation.pueblos.length > 0) {
-      segmentation.pueblos.forEach(pueblo => {
-        const normalized = normalizeId(pueblo);
-        orConditions.push({ 'data.pueblo_id': normalized });
-        orConditions.push({ 'data.pueblo_id': pueblo });
-        orConditions.push({ 'data.pueblo_nombre': pueblo });
-        orConditions.push({ 'data.pueblo_nombre': normalized });
+      const screenPatterns = segmentation.pueblos.map(p => {
+        const normalized = p.toLowerCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+          .replace(/ó/g, 'o').replace(/ú/g, 'u').replace(/ü/g, 'u')
+          .replace(/ñ/g, 'n')
+          .replace(/\s+/g, '_')
+          .replace(/[^a-z0-9_]/g, '');
+        return normalized + 'Screen';
       });
+      
+      segmentation.pueblos.forEach(pueblo => {
+        const variants = generateVariants(pueblo);
+        variants.forEach(v => {
+          orConditions.push({ 'data.pueblo_id': v });
+          orConditions.push({ 'data.pueblo_nombre': v });
+          orConditions.push({ 'data.town_name': v });
+          orConditions.push({ 'data.screen_name': v });
+        });
+      });
+      
+      // Regex dinámico para screen_name
+      orConditions.push({ 'data.screen_name': { $regex: new RegExp(screenPatterns.join('|'), 'i') } });
     }
     
     if (segmentation.categorias && segmentation.categorias.length > 0) {
       segmentation.categorias.forEach(categoria => {
-        const normalized = normalizeId(categoria);
-        orConditions.push({ 'data.category_id': normalized });
-        orConditions.push({ 'data.category_id': categoria });
-        orConditions.push({ 'data.category_name': categoria });
-        orConditions.push({ 'data.category_name': normalized });
+        const variants = generateVariants(categoria);
+        variants.forEach(v => {
+          orConditions.push({ 'data.category_id': v });
+          orConditions.push({ 'data.category_name': v });
+        });
       });
     }
     
-    // ========================================
-    // NUEVO: Búsqueda directa de entidades
-    // ========================================
     if (segmentation.entidades && segmentation.entidades.length > 0) {
       segmentation.entidades.forEach(entidad => {
-        const normalized = normalizeId(entidad);
-        orConditions.push({ 'data.entity_id': normalized });
-        orConditions.push({ 'data.entity_id': entidad });
-        orConditions.push({ 'data.entity_name': entidad });
-        orConditions.push({ 'data.entity_name': normalized });
-        orConditions.push({ 'data.lugar_nombre': entidad });
-        orConditions.push({ 'data.sitio': entidad });
+        const variants = generateVariants(entidad);
+        variants.forEach(v => {
+          orConditions.push({ 'data.entity_id': v });
+          orConditions.push({ 'data.entity_name': v });
+          orConditions.push({ 'data.lugar_nombre': v });
+        });
       });
     }
     
