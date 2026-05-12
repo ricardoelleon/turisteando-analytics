@@ -2723,7 +2723,7 @@ app.post('/api/notifications/send', async (req, res) => {
 });
 
 /**
- * Programar notificación (NUEVO)
+ * Programar notificación (NUEVO - CON CORRECCIÓN DE ZONA HORARIA)
  */
 app.post('/api/notifications/schedule', async (req, res) => {
   try {
@@ -2750,14 +2750,51 @@ app.post('/api/notifications/schedule', async (req, res) => {
       });
     }
     
-    const scheduledDate = new Date(scheduled_date);
+    // ========================================
+    // CORRECCIÓN DE ZONA HORARIA PARA COLOMBIA
+    // La fecha viene en formato local de Colombia (ej: "2026-05-12T00:05:00")
+    // Debemos interpretarla como hora Colombia (UTC-5) y convertirla a UTC
+    // ========================================
+    let scheduledDate;
+    
+    // Verificar si la fecha viene sin zona horaria (formato: YYYY-MM-DDTHH:MM:SS)
+    const hasTimezone = scheduled_date.includes('Z') || 
+                        scheduled_date.includes('+') || 
+                        (scheduled_date.lastIndexOf('-') > 10);
+    
+    if (!hasTimezone) {
+      // Agregar offset de Colombia (UTC-5)
+      // "2026-05-12T00:05:00" -> "2026-05-12T00:05:00-05:00"
+      const dateWithTimezone = scheduled_date + '-05:00';
+      scheduledDate = new Date(dateWithTimezone);
+      console.log(`📅 Fecha recibida: ${scheduled_date} (Colombia UTC-5)`);
+      console.log(`📅 Convertida a UTC: ${scheduledDate.toISOString()}`);
+    } else {
+      scheduledDate = new Date(scheduled_date);
+      console.log(`📅 Fecha recibida con zona horaria: ${scheduled_date}`);
+    }
+    
+    // Verificar que la fecha es válida
+    if (isNaN(scheduledDate.getTime())) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Formato de fecha inválido' 
+      });
+    }
+    
     const now = new Date();
     const minTime = new Date(now.getTime() + 60 * 1000); // Mínimo 1 minuto en el futuro
     
+    console.log(`⏰ Ahora (UTC): ${now.toISOString()}`);
+    console.log(`⏰ Mínimo permitido: ${minTime.toISOString()}`);
+    console.log(`⏰ Fecha programada: ${scheduledDate.toISOString()}`);
+    console.log(`⏰ Diferencia: ${Math.round((scheduledDate - now) / 1000 / 60)} minutos`);
+    
     if (scheduledDate < minTime) {
+      const diffMinutes = Math.round((scheduledDate - now) / 1000 / 60);
       return res.status(400).json({ 
         success: false, 
-        error: 'La fecha programada debe ser al menos 1 minuto en el futuro' 
+        error: `La fecha programada debe ser al menos 1 minuto en el futuro. Tu selección es ${Math.abs(diffMinutes)} minutos ${diffMinutes < 0 ? 'en el pasado' : 'muy cercana'}.` 
       });
     }
     
@@ -2782,6 +2819,8 @@ app.post('/api/notifications/schedule', async (req, res) => {
       message: 'Notificación programada correctamente',
       scheduled_id: result.insertedId,
       scheduled_date: scheduledDate.toISOString(),
+      scheduled_date_local: scheduled_date,
+      timezone_applied: 'America/Bogota (UTC-5)'
     });
     
   } catch (error) {
