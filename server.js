@@ -709,10 +709,22 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
   };
 }
 
+// ========================================
+// SEGMENTACIÓN INTELIGENTE - FUNCIÓN MEJORADA
+// ========================================
+
 /**
- * Obtener tokens con segmentación
+ * Obtener tokens con segmentación INTELIGENTE
+ * Busca usuarios basándose en:
+ * - Preferencias guardadas (método original)
+ * - Pueblos que han visitado (pueblo_view events)
+ * - Categorías que han visto (category_view, category_clicked events)
+ * - ENTIDADES/SITIOS con los que han interactuado (entity_clicked events)
  */
 async function getTokensWithSegmentation(segmentation = {}) {
+  console.log('🎯 getTokensWithSegmentation llamada con:', JSON.stringify(segmentation));
+  
+  // ESTRATEGIA 1: Buscar por preferencias guardadas (método original)
   const query = { activo: true };
   
   if (segmentation.pueblos && segmentation.pueblos.length > 0) {
@@ -739,8 +751,263 @@ async function getTokensWithSegmentation(segmentation = {}) {
     query.fecha_registro = { $gte: date };
   }
   
-  const devices = await deviceTokensCollection.find(query).toArray();
-  return devices.map(d => d.token);
+  // Buscar por preferencias guardadas
+  let devices = await deviceTokensCollection.find(query).toArray();
+  console.log(`📊 Usuarios encontrados por preferencias guardadas: ${devices.length}`);
+  
+  // ESTRATEGIA 2: Si no encontramos usuarios por preferencias, buscar por ACTIVIDAD
+  if (devices.length === 0 && mongoDb) {
+    console.log('🔍 No se encontraron usuarios por preferencias, buscando por actividad...');
+    
+    const tokensPorActividad = new Set();
+    
+    // ========================================
+    // NUEVO: Buscar usuarios que han interactuado con ENTIDADES/SITIOS específicos
+    // ========================================
+    if (segmentation.entidades && segmentation.entidades.length > 0) {
+      const entidadesBusqueda = segmentation.entidades.map(e => {
+        const normalized = normalizeId(e);
+        return [
+          normalized,
+          e.toLowerCase(),
+          e.charAt(0).toUpperCase() + e.slice(1),
+          e
+        ];
+      }).flat();
+      
+      console.log('🏢 Buscando actividad en entidades/sitios:', entidadesBusqueda);
+      
+      const fechaLimite = new Date();
+      fechaLimite.setDate(fechaLimite.getDate() - 90);
+      
+      // Buscar tokens que han interactuado con estas entidades
+      const eventosEntidades = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.entity_id': { $in: entidadesBusqueda } },
+              { 'data.entity_name': { $in: entidadesBusqueda } },
+              { 'data.entidad': { $in: entidadesBusqueda } },
+              { 'data.lugar_nombre': { $in: entidadesBusqueda } },
+              { 'data.sitio': { $in: entidadesBusqueda } },
+              { 'data.site_name': { $in: entidadesBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 },
+            entidades: { $addToSet: '$data.entity_name' }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 500 }
+      ]).toArray();
+      
+      eventosEntidades.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+      
+      console.log(`📊 Tokens encontrados por actividad en entidades: ${eventosEntidades.length}`);
+    }
+    
+    // Buscar usuarios que han visitado pueblos específicos
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      const pueblosBusqueda = segmentation.pueblos.map(p => {
+        const normalized = normalizeId(p);
+        return [
+          normalized,
+          p.toLowerCase(),
+          p.charAt(0).toUpperCase() + p.slice(1),
+          p.toUpperCase(),
+          p
+        ];
+      }).flat();
+      
+      console.log('🏘️ Buscando actividad en pueblos:', pueblosBusqueda);
+      
+      const fechaLimite = new Date();
+      fechaLimite.setDate(fechaLimite.getDate() - 90);
+      
+      const eventosPueblos = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.pueblo_id': { $in: pueblosBusqueda } },
+              { 'data.pueblo_nombre': { $in: pueblosBusqueda } },
+              { 'data.pueblo': { $in: pueblosBusqueda } },
+              { 'data.town_name': { $in: pueblosBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 500 }
+      ]).toArray();
+      
+      eventosPueblos.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+      
+      console.log(`📊 Tokens encontrados por actividad en pueblos: ${eventosPueblos.length}`);
+    }
+    
+    // Buscar usuarios que han interactuado con categorías específicas
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      const categoriasBusqueda = segmentation.categorias.map(c => {
+        const normalized = normalizeId(c);
+        return [
+          normalized,
+          c.toLowerCase(),
+          c.charAt(0).toUpperCase() + c.slice(1),
+          c.toUpperCase(),
+          c,
+          normalized.replace(/_/g, ' '),
+          normalized.replace(/_/g, ' ').charAt(0).toUpperCase() + normalized.replace(/_/g, ' ').slice(1)
+        ];
+      }).flat();
+      
+      console.log('📂 Buscando actividad en categorías:', categoriasBusqueda);
+      
+      const fechaLimite = new Date();
+      fechaLimite.setDate(fechaLimite.getDate() - 90);
+      
+      const eventosCategorias = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.category_id': { $in: categoriasBusqueda } },
+              { 'data.category_name': { $in: categoriasBusqueda } },
+              { 'data.categoria': { $in: categoriasBusqueda } },
+              { 'data.category': { $in: categoriasBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 500 }
+      ]).toArray();
+      
+      eventosCategorias.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+      
+      console.log(`📊 Tokens encontrados por actividad en categorías: ${eventosCategorias.length}`);
+    }
+    
+    // Si encontramos tokens por actividad, buscarlos en device_tokens
+    if (tokensPorActividad.size > 0) {
+      const tokensArray = Array.from(tokensPorActividad);
+      console.log(`📊 Total tokens únicos por actividad: ${tokensArray.length}`);
+      
+      devices = await deviceTokensCollection.find({
+        token: { $in: tokensArray },
+        activo: true
+      }).toArray();
+      
+      console.log(`📊 Tokens activos encontrados: ${devices.length}`);
+    }
+  }
+  
+  // ESTRATEGIA 3: Búsqueda directa en eventos si aún no hay resultados
+  if (devices.length === 0 && mongoDb && (segmentation.pueblos?.length > 0 || segmentation.categorias?.length > 0 || segmentation.entidades?.length > 0)) {
+    console.log('🔍 Buscando tokens directamente en eventos...');
+    
+    const fechaLimite = new Date();
+    fechaLimite.setDate(fechaLimite.getDate() - 90);
+    
+    const orConditions = [];
+    
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      segmentation.pueblos.forEach(pueblo => {
+        const normalized = normalizeId(pueblo);
+        orConditions.push({ 'data.pueblo_id': normalized });
+        orConditions.push({ 'data.pueblo_id': pueblo });
+        orConditions.push({ 'data.pueblo_nombre': pueblo });
+        orConditions.push({ 'data.pueblo_nombre': normalized });
+      });
+    }
+    
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      segmentation.categorias.forEach(categoria => {
+        const normalized = normalizeId(categoria);
+        orConditions.push({ 'data.category_id': normalized });
+        orConditions.push({ 'data.category_id': categoria });
+        orConditions.push({ 'data.category_name': categoria });
+        orConditions.push({ 'data.category_name': normalized });
+      });
+    }
+    
+    // ========================================
+    // NUEVO: Búsqueda directa de entidades
+    // ========================================
+    if (segmentation.entidades && segmentation.entidades.length > 0) {
+      segmentation.entidades.forEach(entidad => {
+        const normalized = normalizeId(entidad);
+        orConditions.push({ 'data.entity_id': normalized });
+        orConditions.push({ 'data.entity_id': entidad });
+        orConditions.push({ 'data.entity_name': entidad });
+        orConditions.push({ 'data.entity_name': normalized });
+        orConditions.push({ 'data.lugar_nombre': entidad });
+        orConditions.push({ 'data.sitio': entidad });
+      });
+    }
+    
+    if (orConditions.length > 0) {
+      const eventosConToken = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: orConditions,
+            'data.device_token': { $exists: true, $ne: null, $ne: '' }
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $sort: { eventos: -1 } },
+        { $limit: 500 }
+      ]).toArray();
+      
+      console.log(`📊 Tokens encontrados directamente en eventos: ${eventosConToken.length}`);
+      
+      if (eventosConToken.length > 0) {
+        const tokensDirectos = eventosConToken.map(e => e._id).filter(t => t);
+        
+        devices = await deviceTokensCollection.find({
+          token: { $in: tokensDirectos },
+          activo: true
+        }).toArray();
+        
+        console.log(`📊 Tokens activos encontrados (método directo): ${devices.length}`);
+      }
+    }
+  }
+  
+  const tokens = devices.map(d => d.token);
+  console.log(`🎯 Tokens finales a enviar: ${tokens.length}`);
+  
+  return tokens;
 }
 
 /**
@@ -957,7 +1224,7 @@ app.get('/api/health', (req, res) => {
     mongodb: mongoDb ? 'connected' : 'disconnected',
     firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
     firestore: firestoreDb ? 'initialized' : 'not initialized',
-    version: '5.1.0-notifications-pro-firestore'
+    version: '5.4.0-notifications-pro-segmentacion-inteligente'
   });
 });
 
@@ -2643,7 +2910,7 @@ app.post('/api/notifications/preferences', async (req, res) => {
 });
 
 /**
- * Enviar notificación (ACTUALIZADO con segmentación)
+ * Enviar notificación (ACTUALIZADO con segmentación inteligente)
  */
 app.post('/api/notifications/send', async (req, res) => {
   try {
@@ -2687,7 +2954,7 @@ app.post('/api/notifications/send', async (req, res) => {
     if (tokens.length === 0) {
       return res.json({ 
         success: true, 
-        message: 'No hay dispositivos registrados',
+        message: 'No hay dispositivos registrados con esa segmentación',
         stats: { total: 0, exitosos: 0, fallidos: 0 }
       });
     }
@@ -2713,6 +2980,7 @@ app.post('/api/notifications/send', async (req, res) => {
         exitosos: result.exitosos,
         fallidos: result.fallidos,
       },
+      segmentation_usada: segmentation,
       details: result.details.slice(0, 5),
     });
     
@@ -2723,7 +2991,7 @@ app.post('/api/notifications/send', async (req, res) => {
 });
 
 /**
- * Programar notificación (NUEVO - CON CORRECCIÓN DE ZONA HORARIA)
+ * Programar notificación (CON CORRECCIÓN DE ZONA HORARIA)
  */
 app.post('/api/notifications/schedule', async (req, res) => {
   try {
@@ -2752,29 +3020,22 @@ app.post('/api/notifications/schedule', async (req, res) => {
     
     // ========================================
     // CORRECCIÓN DE ZONA HORARIA PARA COLOMBIA
-    // La fecha viene en formato local de Colombia (ej: "2026-05-12T00:05:00")
-    // Debemos interpretarla como hora Colombia (UTC-5) y convertirla a UTC
     // ========================================
     let scheduledDate;
     
-    // Verificar si la fecha viene sin zona horaria (formato: YYYY-MM-DDTHH:MM:SS)
     const hasTimezone = scheduled_date.includes('Z') || 
                         scheduled_date.includes('+') || 
                         (scheduled_date.lastIndexOf('-') > 10);
     
     if (!hasTimezone) {
-      // Agregar offset de Colombia (UTC-5)
-      // "2026-05-12T00:05:00" -> "2026-05-12T00:05:00-05:00"
       const dateWithTimezone = scheduled_date + '-05:00';
       scheduledDate = new Date(dateWithTimezone);
       console.log(`📅 Fecha recibida: ${scheduled_date} (Colombia UTC-5)`);
       console.log(`📅 Convertida a UTC: ${scheduledDate.toISOString()}`);
     } else {
       scheduledDate = new Date(scheduled_date);
-      console.log(`📅 Fecha recibida con zona horaria: ${scheduled_date}`);
     }
     
-    // Verificar que la fecha es válida
     if (isNaN(scheduledDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
@@ -2783,18 +3044,12 @@ app.post('/api/notifications/schedule', async (req, res) => {
     }
     
     const now = new Date();
-    const minTime = new Date(now.getTime() + 60 * 1000); // Mínimo 1 minuto en el futuro
-    
-    console.log(`⏰ Ahora (UTC): ${now.toISOString()}`);
-    console.log(`⏰ Mínimo permitido: ${minTime.toISOString()}`);
-    console.log(`⏰ Fecha programada: ${scheduledDate.toISOString()}`);
-    console.log(`⏰ Diferencia: ${Math.round((scheduledDate - now) / 1000 / 60)} minutos`);
+    const minTime = new Date(now.getTime() + 60 * 1000);
     
     if (scheduledDate < minTime) {
-      const diffMinutes = Math.round((scheduledDate - now) / 1000 / 60);
       return res.status(400).json({ 
         success: false, 
-        error: `La fecha programada debe ser al menos 1 minuto en el futuro. Tu selección es ${Math.abs(diffMinutes)} minutos ${diffMinutes < 0 ? 'en el pasado' : 'muy cercana'}.` 
+        error: 'La fecha programada debe ser al menos 1 minuto en el futuro' 
       });
     }
     
@@ -2819,7 +3074,6 @@ app.post('/api/notifications/schedule', async (req, res) => {
       message: 'Notificación programada correctamente',
       scheduled_id: result.insertedId,
       scheduled_date: scheduledDate.toISOString(),
-      scheduled_date_local: scheduled_date,
       timezone_applied: 'America/Bogota (UTC-5)'
     });
     
@@ -2830,7 +3084,7 @@ app.post('/api/notifications/schedule', async (req, res) => {
 });
 
 /**
- * Obtener notificaciones programadas (NUEVO)
+ * Obtener notificaciones programadas
  */
 app.get('/api/notifications/scheduled', async (req, res) => {
   try {
@@ -2850,7 +3104,7 @@ app.get('/api/notifications/scheduled', async (req, res) => {
 });
 
 /**
- * Cancelar notificación programada (NUEVO)
+ * Cancelar notificación programada
  */
 app.delete('/api/notifications/scheduled/:id', async (req, res) => {
   try {
@@ -2874,7 +3128,7 @@ app.delete('/api/notifications/scheduled/:id', async (req, res) => {
 });
 
 /**
- * Crear notificación recurrente (NUEVO)
+ * Crear notificación recurrente
  */
 app.post('/api/notifications/recurring', async (req, res) => {
   try {
@@ -2904,7 +3158,6 @@ app.post('/api/notifications/recurring', async (req, res) => {
       });
     }
     
-    // Validar expresión cron
     if (!cron.validate(cron_expression)) {
       return res.status(400).json({ 
         success: false, 
@@ -2934,7 +3187,6 @@ app.post('/api/notifications/recurring', async (req, res) => {
     
     const result = await recurringNotificationsCollection.insertOne(recurringNotification);
     
-    // Programar el job
     scheduleRecurringJob(result.insertedId.toString(), recurringNotification);
     
     res.json({
@@ -2951,7 +3203,7 @@ app.post('/api/notifications/recurring', async (req, res) => {
 });
 
 /**
- * Obtener notificaciones recurrentes (NUEVO)
+ * Obtener notificaciones recurrentes
  */
 app.get('/api/notifications/recurring', async (req, res) => {
   try {
@@ -2967,7 +3219,7 @@ app.get('/api/notifications/recurring', async (req, res) => {
 });
 
 /**
- * Activar/Desactivar notificación recurrente (NUEVO)
+ * Activar/Desactivar notificación recurrente
  */
 app.patch('/api/notifications/recurring/:id/toggle', async (req, res) => {
   try {
@@ -3006,7 +3258,7 @@ app.patch('/api/notifications/recurring/:id/toggle', async (req, res) => {
 });
 
 /**
- * Eliminar notificación recurrente (NUEVO)
+ * Eliminar notificación recurrente
  */
 app.delete('/api/notifications/recurring/:id', async (req, res) => {
   try {
@@ -3048,7 +3300,7 @@ app.get('/api/notifications/history', async (req, res) => {
 });
 
 /**
- * Estadísticas de notificaciones (ACTUALIZADO)
+ * Estadísticas de notificaciones
  */
 app.get('/api/notifications/stats', async (req, res) => {
   try {
@@ -3113,44 +3365,33 @@ app.get('/api/notifications/stats', async (req, res) => {
 });
 
 // ========================================
-// ENDPOINT ACTUALIZADO: dynamic-data que lee desde Firestore
-// EXPLORA TODAS LAS SUBCOLECCIONES, NO SOLO categorias_activas
+// ENDPOINT: dynamic-data que lee desde Firestore
 // ========================================
 app.get('/api/notifications/dynamic-data', async (req, res) => {
   try {
-    // Si Firestore está disponible, leer datos dinámicos
     if (firestoreDb) {
-      console.log('📊 Leyendo datos dinámicos desde Firestore (explorando TODAS las subcolecciones)...');
+      console.log('📊 Leyendo datos dinámicos desde Firestore...');
       
-      // 1. Obtener pueblos
       const pueblosSnapshot = await firestoreDb.collection('pueblos').get();
       
       const pueblos = [];
       const categoriasSet = new Set();
       const entidades = [];
       
-      // Procesar cada pueblo
       for (const doc of pueblosSnapshot.docs) {
         const data = doc.data();
         const puebloId = doc.id;
         const nombrePueblo = data.nombre || puebloId;
         const categoriasActivas = data.categorias_activas || [];
         
-        // Agregar pueblo a la lista
         pueblos.push({
           id: puebloId,
           nombre: nombrePueblo,
           categorias_activas: categoriasActivas
         });
         
-        // Recopilar categorías de categorias_activas
         categoriasActivas.forEach(cat => categoriasSet.add(cat));
         
-        // ============================================================
-        // NUEVO: EXPLORAR TODAS LAS SUBCOLECCIONES DEL PUEBLO
-        // Esto encuentra categorías que existen como subcolecciones
-        // pero que NO están listadas en categorias_activas
-        // ============================================================
         try {
           const subcollections = await firestoreDb
             .collection('pueblos')
@@ -3158,37 +3399,28 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
             .listCollections();
           
           for (const subcol of subcollections) {
-            const subcolId = subcol.id;
-            // Agregar esta subcolección como categoría
-            categoriasSet.add(subcolId);
-            console.log(`  📂 Encontrada subcolección: ${puebloId}/${subcolId}`);
+            categoriasSet.add(subcol.id);
           }
         } catch (listError) {
-          console.log(`  ⚠️ No se pudieron listar subcolecciones de ${puebloId}: ${listError.message}`);
+          console.log(`  ⚠️ No se pudieron listar subcolecciones de ${puebloId}`);
         }
       }
 
-      // 2. Convertir categorías a formato para el dropdown
       const categorias = Array.from(categoriasSet)
-        .sort() // Ordenar alfabéticamente
+        .sort()
         .map(cat => ({
           id: normalizeId(cat),
           nombre: cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' '),
-          original: cat // Guardar el nombre original también
+          original: cat
         }));
 
-      // 3. Obtener entidades de TODOS los pueblos y TODAS las categorías (SIN LÍMITES)
-      console.log('📊 Cargando entidades de todos los pueblos y categorías...');
-      
       for (const pueblo of pueblos) {
-        // Obtener todas las categorías de este pueblo (de categorias_activas Y subcolecciones)
         const categoriasDelPueblo = Array.from(categoriasSet);
         
         for (const categoria of categoriasDelPueblo) {
           const categoriaNormalizada = normalizeId(categoria);
           
           try {
-            // SIN .limit() - cargar TODAS las entidades
             const entidadesSnapshot = await firestoreDb
               .collection('pueblos')
               .doc(pueblo.id)
@@ -3205,16 +3437,12 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
                   pueblo: pueblo.id
                 });
               });
-              console.log(`  ✅ ${pueblo.id}/${categoriaNormalizada}: ${entidadesSnapshot.size} entidades`);
             }
-          } catch (e) {
-            // Ignorar errores de colecciones que no existen
-          }
+          } catch (e) {}
         }
       }
 
-      console.log(`📊 Datos dinámicos desde Firestore: ${pueblos.length} pueblos, ${categorias.length} categorías, ${entidades.length} entidades`);
-      console.log(`📊 Categorías encontradas: ${categorias.map(c => c.id).join(', ')}`);
+      console.log(`📊 Datos desde Firestore: ${pueblos.length} pueblos, ${categorias.length} categorías, ${entidades.length} entidades`);
 
       return res.json({
         success: true,
@@ -3230,18 +3458,15 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
       });
     }
     
-    // Fallback a MongoDB si Firestore no está disponible
+    // Fallback a MongoDB
     if (!mongoDb) {
       return res.json({ success: false, error: 'Ni Firestore ni MongoDB están disponibles' });
     }
-    
-    console.log('📊 Firestore no disponible, usando MongoDB como fallback...');
     
     const { days = 30 } = req.query;
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
     
-    // Obtener pueblos únicos de eventos
     const pueblos = await mongoDb.collection('events').aggregate([
       { $match: { server_time: { $gte: startDate } } },
       { $project: { pueblo: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id'] } } },
@@ -3250,7 +3475,6 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
       { $sort: { count: -1 } }
     ]).toArray();
     
-    // Categorías desde MongoDB
     const categoriasMongo = await mongoDb.collection('events').aggregate([
       { $match: { server_time: { $gte: startDate } } },
       { $project: { categoria: { $ifNull: ['$data.category_name', '$data.category_id'] } } },
@@ -3260,7 +3484,6 @@ app.get('/api/notifications/dynamic-data', async (req, res) => {
       { $limit: 20 }
     ]).toArray();
     
-    // Obtener entidades
     const entidades = await mongoDb.collection('events').aggregate([
       { $match: { server_time: { $gte: startDate }, event_name: { $in: ['entity_clicked', 'entity_detail_view'] } } },
       { $project: { 
@@ -3322,7 +3545,6 @@ app.get('/api/notifications/test-send', async (req, res) => {
     
     const result = await sendNotificationToTokens(tokens, notification, { action_type: 'open_home' });
     
-    // Guardar en historial
     await saveNotificationToHistory(
       { ...notification, tipo: 'manual' },
       result,
@@ -3368,11 +3590,189 @@ app.delete('/api/notifications/token/:token', async (req, res) => {
 });
 
 // ========================================
+// NUEVO: ENDPOINT PARA DEBUG DE SEGMENTACIÓN
+// ========================================
+
+/**
+ * Debug de segmentación - ver qué tokens se encontrarían
+ */
+app.post('/api/notifications/debug-segmentation', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { segmentation = {} } = req.body;
+    
+    console.log('🔍 Debug de segmentación:', JSON.stringify(segmentation));
+    
+    // ESTRATEGIA 1: Por preferencias guardadas
+    const query = { activo: true };
+    
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      query['preferencias.pueblos_interes'] = { $in: segmentation.pueblos };
+    }
+    
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      query['preferencias.categorias_interes'] = { $in: segmentation.categorias };
+    }
+    
+    const devicesByPreferences = await deviceTokensCollection.find(query).toArray();
+    
+    // ESTRATEGIA 2: Por actividad en eventos
+    const tokensPorActividad = new Set();
+    let eventosPueblos = [];
+    let eventosCategorias = [];
+    let eventosEntidades = [];
+    
+    const fechaLimite = new Date();
+    fechaLimite.setDate(fechaLimite.getDate() - 90);
+    
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      const pueblosBusqueda = segmentation.pueblos.map(p => {
+        const normalized = normalizeId(p);
+        return [normalized, p.toLowerCase(), p];
+      }).flat();
+      
+      eventosPueblos = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.pueblo_id': { $in: pueblosBusqueda } },
+              { 'data.pueblo_nombre': { $in: pueblosBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 10 }
+      ]).toArray();
+      
+      eventosPueblos.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+    }
+    
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      const categoriasBusqueda = segmentation.categorias.map(c => {
+        const normalized = normalizeId(c);
+        return [normalized, c.toLowerCase(), c];
+      }).flat();
+      
+      eventosCategorias = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.category_id': { $in: categoriasBusqueda } },
+              { 'data.category_name': { $in: categoriasBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 10 }
+      ]).toArray();
+      
+      eventosCategorias.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+    }
+    
+    // NUEVO: Buscar por entidades
+    if (segmentation.entidades && segmentation.entidades.length > 0) {
+      const entidadesBusqueda = segmentation.entidades.map(e => {
+        const normalized = normalizeId(e);
+        return [normalized, e.toLowerCase(), e];
+      }).flat();
+      
+      eventosEntidades = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.entity_id': { $in: entidadesBusqueda } },
+              { 'data.entity_name': { $in: entidadesBusqueda } },
+              { 'data.lugar_nombre': { $in: entidadesBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 10 }
+      ]).toArray();
+      
+      eventosEntidades.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+    }
+    
+    const tokensArray = Array.from(tokensPorActividad);
+    const devicesByActivity = tokensArray.length > 0 
+      ? await deviceTokensCollection.find({
+          token: { $in: tokensArray },
+          activo: true
+        }).toArray()
+      : [];
+    
+    res.json({
+      success: true,
+      debug: {
+        segmentation,
+        estrategia1_preferencias: {
+          query,
+          encontrados: devicesByPreferences.length,
+          tokens: devicesByPreferences.slice(0, 5).map(d => d.token?.substring(0, 30) + '...')
+        },
+        estrategia2_actividad: {
+          pueblos_buscados: segmentation.pueblos || [],
+          categorias_buscadas: segmentation.categorias || [],
+          entidades_buscadas: segmentation.entidades || [],
+          eventos_pueblos: eventosPueblos.length,
+          eventos_categorias: eventosCategorias.length,
+          eventos_entidades: eventosEntidades.length,
+          tokens_unicos: tokensArray.length,
+          tokens_activos: devicesByActivity.length
+        }
+      },
+      resumen: {
+        total_por_preferencias: devicesByPreferences.length,
+        total_por_actividad: devicesByActivity.length,
+        total_final: devicesByPreferences.length > 0 ? devicesByPreferences.length : devicesByActivity.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error en debug-segmentation:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
 // INICIAR SERVIDOR
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v5.1.0 (Notifications Pro + Firestore) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v5.4.0 (Segmentación Inteligente) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
