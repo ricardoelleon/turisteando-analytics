@@ -1082,15 +1082,26 @@ async function getTokensWithSegmentation(segmentation = {}) {
       console.log(`📊 Tokens encontrados directamente en eventos: ${eventosConToken.length}`);
       
       if (eventosConToken.length > 0) {
-        const tokensDirectos = eventosConToken.map(e => e._id).filter(t => t);
-        
-        devices = await deviceTokensCollection.find({
-          token: { $in: tokensDirectos },
-          activo: true
-        }).toArray();
-        
-        console.log(`📊 Tokens activos encontrados (método directo): ${devices.length}`);
-      }
+  const tokensDirectos = eventosConToken.map(e => e._id).filter(t => t);
+  
+  devices = await deviceTokensCollection.find({
+    token: { $in: tokensDirectos },
+    activo: true
+  }).toArray();
+  
+  console.log(`📊 Tokens activos encontrados (método directo): ${devices.length}`);
+  
+  // 🆕 Si no están en device_tokens, usar directamente
+  if (devices.length === 0 && tokensDirectos.length > 0) {
+    console.log('⚠️ Usando tokens directamente desde eventos (estrategia 3)');
+    devices = tokensDirectos.map(token => ({
+      token: token,
+      activo: true,
+      source: 'events_direct_strategy3'
+       }));
+  }
+}
+      
     }
   }
   
