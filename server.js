@@ -709,10 +709,21 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
   };
 }
 
+// ========================================
+// SEGMENTACIÓN INTELIGENTE - NUEVA IMPLEMENTACIÓN
+// ========================================
+
 /**
- * Obtener tokens con segmentación
+ * Obtener tokens con segmentación INTELIGENTE
+ * Ahora busca usuarios basándose en sus eventos de actividad:
+ * - Pueblos que han visitado (pueblo_view events)
+ * - Categorías que han visto (category_view, category_clicked events)
+ * - Entidades con las que han interactuado (entity_clicked events)
  */
 async function getTokensWithSegmentation(segmentation = {}) {
+  console.log('🎯 getTokensWithSegmentation llamada con:', JSON.stringify(segmentation));
+  
+  // ESTRATEGIA 1: Buscar por preferencias guardadas (método original)
   const query = { activo: true };
   
   if (segmentation.pueblos && segmentation.pueblos.length > 0) {
@@ -739,8 +750,206 @@ async function getTokensWithSegmentation(segmentation = {}) {
     query.fecha_registro = { $gte: date };
   }
   
-  const devices = await deviceTokensCollection.find(query).toArray();
-  return devices.map(d => d.token);
+  // Buscar por preferencias guardadas
+  let devices = await deviceTokensCollection.find(query).toArray();
+  console.log(`📊 Usuarios encontrados por preferencias guardadas: ${devices.length}`);
+  
+  // ESTRATEGIA 2: Si no encontramos usuarios por preferencias, buscar por ACTIVIDAD
+  // Esto busca en los eventos qué usuarios han interactuado con esos pueblos/categorías
+  if (devices.length === 0 && mongoDb) {
+    console.log('🔍 No se encontraron usuarios por preferencias, buscando por actividad...');
+    
+    const tokensPorActividad = new Set();
+    
+    // Buscar usuarios que han visitado pueblos específicos
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      // Normalizar nombres de pueblos para la búsqueda
+      const pueblosBusqueda = segmentation.pueblos.map(p => {
+        const normalized = normalizeId(p);
+        // Variaciones comunes
+        return [
+          normalized,
+          p.toLowerCase(),
+          p.charAt(0).toUpperCase() + p.slice(1), // Primera mayúscula
+          p.toUpperCase(),
+          p
+        ];
+      }).flat();
+      
+      console.log('🏘️ Buscando actividad en pueblos:', pueblosBusqueda);
+      
+      // Buscar en eventos de los últimos 90 días
+      const fechaLimite = new Date();
+      fechaLimite.setDate(fechaLimite.getDate() - 90);
+      
+      // Buscar tokens que han visto estos pueblos
+      const eventosPueblos = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.pueblo_id': { $in: pueblosBusqueda } },
+              { 'data.pueblo_nombre': { $in: pueblosBusqueda } },
+              { 'data.pueblo': { $in: pueblosBusqueda } },
+              { 'data.town_name': { $in: pueblosBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 500 }
+      ]).toArray();
+      
+      eventosPueblos.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+      
+      console.log(`📊 Tokens encontrados por actividad en pueblos: ${eventosPueblos.length}`);
+    }
+    
+    // Buscar usuarios que han interactuado con categorías específicas
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      // Normalizar nombres de categorías para la búsqueda
+      const categoriasBusqueda = segmentation.categorias.map(c => {
+        const normalized = normalizeId(c);
+        return [
+          normalized,
+          c.toLowerCase(),
+          c.charAt(0).toUpperCase() + c.slice(1),
+          c.toUpperCase(),
+          c,
+          normalized.replace(/_/g, ' '), // Sin guiones bajos
+          normalized.replace(/_/g, ' ').charAt(0).toUpperCase() + normalized.replace(/_/g, ' ').slice(1)
+        ];
+      }).flat();
+      
+      console.log('📂 Buscando actividad en categorías:', categoriasBusqueda);
+      
+      // Buscar en eventos de los últimos 90 días
+      const fechaLimite = new Date();
+      fechaLimite.setDate(fechaLimite.getDate() - 90);
+      
+      // Buscar tokens que han visto estas categorías
+      const eventosCategorias = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.category_id': { $in: categoriasBusqueda } },
+              { 'data.category_name': { $in: categoriasBusqueda } },
+              { 'data.categoria': { $in: categoriasBusqueda } },
+              { 'data.category': { $in: categoriasBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 500 }
+      ]).toArray();
+      
+      eventosCategorias.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+      
+      console.log(`📊 Tokens encontrados por actividad en categorías: ${eventosCategorias.length}`);
+    }
+    
+    // Si encontramos tokens por actividad, buscarlos en device_tokens
+    if (tokensPorActividad.size > 0) {
+      const tokensArray = Array.from(tokensPorActividad);
+      console.log(`📊 Total tokens únicos por actividad: ${tokensArray.length}`);
+      
+      // Verificar cuáles de estos tokens están activos
+      devices = await deviceTokensCollection.find({
+        token: { $in: tokensArray },
+        activo: true
+      }).toArray();
+      
+      console.log(`📊 Tokens activos encontrados: ${devices.length}`);
+    }
+  }
+  
+  // ESTRATEGIA 3: Si aún no hay resultados y hay tokens guardados con device_token en eventos
+  if (devices.length === 0 && mongoDb && (segmentation.pueblos?.length > 0 || segmentation.categorias?.length > 0)) {
+    console.log('🔍 Buscando tokens directamente en eventos...');
+    
+    const fechaLimite = new Date();
+    fechaLimite.setDate(fechaLimite.getDate() - 90);
+    
+    // Construir consulta de eventos
+    const orConditions = [];
+    
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      segmentation.pueblos.forEach(pueblo => {
+        const normalized = normalizeId(pueblo);
+        orConditions.push({ 'data.pueblo_id': normalized });
+        orConditions.push({ 'data.pueblo_id': pueblo });
+        orConditions.push({ 'data.pueblo_nombre': pueblo });
+        orConditions.push({ 'data.pueblo_nombre': normalized });
+      });
+    }
+    
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      segmentation.categorias.forEach(categoria => {
+        const normalized = normalizeId(categoria);
+        orConditions.push({ 'data.category_id': normalized });
+        orConditions.push({ 'data.category_id': categoria });
+        orConditions.push({ 'data.category_name': categoria });
+        orConditions.push({ 'data.category_name': normalized });
+      });
+    }
+    
+    if (orConditions.length > 0) {
+      const eventosConToken = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: orConditions,
+            'data.device_token': { $exists: true, $ne: null, $ne: '' }
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $sort: { eventos: -1 } },
+        { $limit: 500 }
+      ]).toArray();
+      
+      console.log(`📊 Tokens encontrados directamente en eventos: ${eventosConToken.length}`);
+      
+      if (eventosConToken.length > 0) {
+        const tokensDirectos = eventosConToken.map(e => e._id).filter(t => t);
+        
+        // Buscar estos tokens en device_tokens (activos)
+        devices = await deviceTokensCollection.find({
+          token: { $in: tokensDirectos },
+          activo: true
+        }).toArray();
+        
+        console.log(`📊 Tokens activos encontrados (método directo): ${devices.length}`);
+      }
+    }
+  }
+  
+  const tokens = devices.map(d => d.token);
+  console.log(`🎯 Tokens finales a enviar: ${tokens.length}`);
+  
+  return tokens;
 }
 
 /**
@@ -957,7 +1166,7 @@ app.get('/api/health', (req, res) => {
     mongodb: mongoDb ? 'connected' : 'disconnected',
     firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
     firestore: firestoreDb ? 'initialized' : 'not initialized',
-    version: '5.2.0-notifications-pro-firestore-timezone-fix'
+    version: '5.3.0-notifications-pro-segmentacion-inteligente'
   });
 });
 
@@ -2723,7 +2932,7 @@ app.post('/api/notifications/send', async (req, res) => {
 });
 
 /**
- * Programar notificación (CORREGIDO CON ZONA HORARIA)
+ * Programar notificación (NUEVO)
  */
 app.post('/api/notifications/schedule', async (req, res) => {
   try {
@@ -2750,55 +2959,14 @@ app.post('/api/notifications/schedule', async (req, res) => {
       });
     }
     
-    // ========================================
-    // CORRECCIÓN DE ZONA HORARIA PARA COLOMBIA
-    // La fecha viene en formato local (ej: "2026-05-12T10:00:00")
-    // Debemos interpretarla en la zona horaria de Colombia (America/Bogota = UTC-5)
-    // ========================================
-    let scheduledDate;
-    
-    // Verificar si la fecha viene sin zona horaria (formato: YYYY-MM-DDTHH:MM:SS)
-    const hasTimezone = scheduled_date.includes('Z') || 
-                        scheduled_date.includes('+') || 
-                        (scheduled_date.lastIndexOf('-') > 10); // '-' después de la fecha (posición > 10)
-    
-    if (!hasTimezone) {
-      // Agregar offset de Colombia (UTC-5)
-      // "2026-05-12T10:00:00" -> "2026-05-12T10:00:00-05:00"
-      // JavaScript automáticamente convierte esto a UTC correctamente
-      const dateWithTimezone = scheduled_date + '-05:00';
-      scheduledDate = new Date(dateWithTimezone);
-      console.log(`📅 Fecha recibida: ${scheduled_date} (Colombia UTC-5)`);
-      console.log(`📅 Convertida a UTC: ${scheduledDate.toISOString()}`);
-    } else {
-      // Si ya viene con zona horaria o es un ISO string completo, usarla directamente
-      scheduledDate = new Date(scheduled_date);
-      console.log(`📅 Fecha recibida con zona horaria: ${scheduled_date}`);
-      console.log(`📅 Interpretada como: ${scheduledDate.toISOString()}`);
-    }
-    
-    // Verificar que la fecha es válida
-    if (isNaN(scheduledDate.getTime())) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Formato de fecha inválido' 
-      });
-    }
-    
+    const scheduledDate = new Date(scheduled_date);
     const now = new Date();
-    // Reducir el mínimo a 30 segundos para más flexibilidad
-    const minTime = new Date(now.getTime() + 30 * 1000);
-    
-    console.log(`⏰ Ahora (UTC): ${now.toISOString()}`);
-    console.log(`⏰ Mínimo permitido: ${minTime.toISOString()}`);
-    console.log(`⏰ Fecha programada: ${scheduledDate.toISOString()}`);
-    console.log(`⏰ Diferencia: ${Math.round((scheduledDate - now) / 1000 / 60)} minutos`);
+    const minTime = new Date(now.getTime() + 60 * 1000); // Mínimo 1 minuto en el futuro
     
     if (scheduledDate < minTime) {
-      const diffMinutes = Math.round((scheduledDate - now) / 1000 / 60);
       return res.status(400).json({ 
         success: false, 
-        error: `La fecha programada debe ser en el futuro. Tu selección es ${Math.abs(diffMinutes)} minutos ${diffMinutes < 0 ? 'en el pasado' : 'muy cercana'}. Intenta con al menos 1 minuto de anticipación.` 
+        error: 'La fecha programada debe ser al menos 1 minuto en el futuro' 
       });
     }
     
@@ -2823,7 +2991,6 @@ app.post('/api/notifications/schedule', async (req, res) => {
       message: 'Notificación programada correctamente',
       scheduled_id: result.insertedId,
       scheduled_date: scheduledDate.toISOString(),
-      scheduled_date_local: scheduled_date,
     });
     
   } catch (error) {
@@ -2885,7 +3052,7 @@ app.post('/api/notifications/recurring', async (req, res) => {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
     
-    const {
+    const{
       name,
       title,
       body,
@@ -3371,14 +3538,156 @@ app.delete('/api/notifications/token/:token', async (req, res) => {
 });
 
 // ========================================
+// NUEVO: ENDPOINT PARA DEBUG DE SEGMENTACIÓN
+// ========================================
+
+/**
+ * Debug de segmentación - ver qué tokens se encontrarían
+ */
+app.post('/api/notifications/debug-segmentation', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+    
+    const { segmentation = {} } = req.body;
+    
+    console.log('🔍 Debug de segmentación:', JSON.stringify(segmentation));
+    
+    // ESTRATEGIA 1: Por preferencias guardadas
+    const query = { activo: true };
+    
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      query['preferencias.pueblos_interes'] = { $in: segmentation.pueblos };
+    }
+    
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      query['preferencias.categorias_interes'] = { $in: segmentation.categorias };
+    }
+    
+    const devicesByPreferences = await deviceTokensCollection.find(query).toArray();
+    
+    // ESTRATEGIA 2: Por actividad en eventos
+    const tokensPorActividad = new Set();
+    let eventosPueblos = [];
+    let eventosCategorias = [];
+    
+    const fechaLimite = new Date();
+    fechaLimite.setDate(fechaLimite.getDate() - 90);
+    
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      const pueblosBusqueda = segmentation.pueblos.map(p => {
+        const normalized = normalizeId(p);
+        return [normalized, p.toLowerCase(), p];
+      }).flat();
+      
+      eventosPueblos = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.pueblo_id': { $in: pueblosBusqueda } },
+              { 'data.pueblo_nombre': { $in: pueblosBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 10 }
+      ]).toArray();
+      
+      eventosPueblos.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+    }
+    
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      const categoriasBusqueda = segmentation.categorias.map(c => {
+        const normalized = normalizeId(c);
+        return [normalized, c.toLowerCase(), c];
+      }).flat();
+      
+      eventosCategorias = await mongoDb.collection('events').aggregate([
+        {
+          $match: {
+            server_time: { $gte: fechaLimite },
+            $or: [
+              { 'data.category_id': { $in: categoriasBusqueda } },
+              { 'data.category_name': { $in: categoriasBusqueda } }
+            ]
+          }
+        },
+        {
+          $group: {
+            _id: '$data.device_token',
+            eventos: { $sum: 1 }
+          }
+        },
+        { $match: { _id: { $ne: null, $ne: '' } } },
+        { $sort: { eventos: -1 } },
+        { $limit: 10 }
+      ]).toArray();
+      
+      eventosCategorias.forEach(e => {
+        if (e._id) tokensPorActividad.add(e._id);
+      });
+    }
+    
+    // Verificar tokens activos por actividad
+    const tokensArray = Array.from(tokensPorActividad);
+    const devicesByActivity = tokensArray.length > 0 
+      ? await deviceTokensCollection.find({
+          token: { $in: tokensArray },
+          activo: true
+        }).toArray()
+      : [];
+    
+    res.json({
+      success: true,
+      debug: {
+        segmentation,
+        estrategia1_preferencias: {
+          query,
+          encontrados: devicesByPreferences.length,
+          tokens: devicesByPreferences.slice(0, 5).map(d => d.token?.substring(0, 30) + '...')
+        },
+        estrategia2_actividad: {
+          pueblos_buscados: segmentation.pueblos || [],
+          categorias_buscadas: segmentation.categorias || [],
+          eventos_pueblos: eventosPueblos.length,
+          eventos_categorias: eventosCategorias.length,
+          tokens_unicos: tokensArray.length,
+          tokens_activos: devicesByActivity.length,
+          muestra_tokens: tokensArray.slice(0, 5).map(t => t?.substring(0, 30) + '...')
+        }
+      },
+      resumen: {
+        total_por_preferencias: devicesByPreferences.length,
+        total_por_actividad: devicesByActivity.length,
+        total_final: devicesByPreferences.length > 0 ? devicesByPreferences.length : devicesByActivity.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error en debug-segmentation:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
 // INICIAR SERVIDOR
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v5.2.0 (Notifications Pro + Firestore + Timezone Fix) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v5.3.0 (Segmentación Inteligente) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
   console.log(`🔥 Firestore: ${firestoreDb ? 'Inicializado' : 'No configurado'}`);
-  console.log(`🕐 Timezone Fix: Colombia (UTC-5) habilitado`);
 });
