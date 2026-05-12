@@ -710,7 +710,7 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
 }
 
 // ========================================
-// SEGMENTACIÓN INTELIGENTE - FUNCIÓN MEJORADA
+// SEGMENTACIÓN INTELIGENTE - FUNCIÓN MEJORADA CON FALLBACK
 // ========================================
 
 /**
@@ -720,6 +720,8 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
  * - Pueblos que han visitado (pueblo_view events)
  * - Categorías que han visto (category_view, category_clicked events)
  * - ENTIDADES/SITIOS con los que han interactuado (entity_clicked events)
+ * 
+ * 🔑 CRÍTICO: Si los tokens no están en device_tokens, los usa directamente desde events
  */
 async function getTokensWithSegmentation(segmentation = {}) {
   console.log('🎯 getTokensWithSegmentation llamada con:', JSON.stringify(segmentation));
@@ -965,20 +967,49 @@ async function getTokensWithSegmentation(segmentation = {}) {
       console.log(`📊 Tokens encontrados por actividad en categorías: ${eventosCategorias.length}`);
     }
     
-    // Si encontramos tokens por actividad, usarlos directamente
-// Si encontramos tokens por actividad, buscarlos en device_tokens
-if (tokensPorActividad.size > 0) {
-  const tokensArray = Array.from(tokensPorActividad);
-  console.log(`📊 Total tokens únicos por actividad: ${tokensArray.length}`);
+    // ========================================
+    // 🔑 CRÍTICO: Si encontramos tokens por actividad, usarlos
+    // ========================================
+    if (tokensPorActividad.size > 0) {
+      const tokensArray = Array.from(tokensPorActividad);
+      console.log(`📊 Total tokens únicos por actividad: ${tokensArray.length}`);
+      
+      // Buscar en device_tokens
+      devices = await deviceTokensCollection.find({
+        token: { $in: tokensArray },
+        activo: true
+      }).toArray();
+      
+      console.log(`📊 Tokens en device_tokens: ${devices.length}`);
+      
+      // 🔑 CRÍTICO: Si no están en device_tokens, usar los tokens de eventos directamente
+      if (devices.length === 0) {
+        console.log('⚠️ Tokens NO registrados en device_tokens, usando tokens de eventos directamente');
+        devices = tokensArray.map(token => ({
+          token: token,
+          activo: true,
+          source: 'events_direct'
+        }));
+        console.log(`📊 Tokens de eventos utilizados directamente: ${devices.length}`);
+      } else if (devices.length < tokensArray.length) {
+        // Si algunos están registrados pero otros no, agregar los que faltan
+        const registeredTokens = new Set(devices.map(d => d.token));
+        const missingTokens = tokensArray.filter(t => !registeredTokens.has(t));
+        
+        if (missingTokens.length > 0) {
+          console.log(`⚠️ Agregando ${missingTokens.length} tokens adicionales desde eventos`);
+          missingTokens.forEach(token => {
+            devices.push({
+              token: token,
+              activo: true,
+              source: 'events_fallback'
+            });
+          });
+        }
+      }
+    }
+  }
   
-  devices = await deviceTokensCollection.find({
-    token: { $in: tokensArray },
-    activo: true
-  }).toArray();
-  
-  console.log(`📊 Tokens activos encontrados: ${devices.length}`);
-}
-    
   // ESTRATEGIA 3: Búsqueda directa en eventos si aún no hay resultados
   if (devices.length === 0 && mongoDb && (segmentation.pueblos?.length > 0 || segmentation.categorias?.length > 0 || segmentation.entidades?.length > 0)) {
     console.log('🔍 Buscando tokens directamente en eventos...');
@@ -1082,26 +1113,25 @@ if (tokensPorActividad.size > 0) {
       console.log(`📊 Tokens encontrados directamente en eventos: ${eventosConToken.length}`);
       
       if (eventosConToken.length > 0) {
-  const tokensDirectos = eventosConToken.map(e => e._id).filter(t => t);
-  
-  devices = await deviceTokensCollection.find({
-    token: { $in: tokensDirectos },
-    activo: true
-  }).toArray();
-  
-  console.log(`📊 Tokens activos encontrados (método directo): ${devices.length}`);
-  
-  // 🆕 Si no están en device_tokens, usar directamente
-  if (devices.length === 0 && tokensDirectos.length > 0) {
-    console.log('⚠️ Usando tokens directamente desde eventos (estrategia 3)');
-    devices = tokensDirectos.map(token => ({
-      token: token,
-      activo: true,
-      source: 'events_direct_strategy3'
-       }));
-  }
-}
-      
+        const tokensDirectos = eventosConToken.map(e => e._id).filter(t => t);
+        
+        devices = await deviceTokensCollection.find({
+          token: { $in: tokensDirectos },
+          activo: true
+        }).toArray();
+        
+        console.log(`📊 Tokens activos encontrados (método directo): ${devices.length}`);
+        
+        // 🔑 Si no están en device_tokens, usar directamente
+        if (devices.length === 0 && tokensDirectos.length > 0) {
+          console.log('⚠️ Usando tokens directamente desde eventos (estrategia 3)');
+          devices = tokensDirectos.map(token => ({
+            token: token,
+            activo: true,
+            source: 'events_direct_strategy3'
+          }));
+        }
+      }
     }
   }
   
@@ -1325,7 +1355,7 @@ app.get('/api/health', (req, res) => {
     mongodb: mongoDb ? 'connected' : 'disconnected',
     firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
     firestore: firestoreDb ? 'initialized' : 'not initialized',
-    version: '5.4.0-notifications-pro-segmentacion-inteligente'
+    version: '5.5.0-segmentacion-con-fallback'
   });
 });
 
@@ -3873,7 +3903,7 @@ app.post('/api/notifications/debug-segmentation', async (req, res) => {
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v5.4.0 (Segmentación Inteligente) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v5.5.0 (Segmentación con Fallback) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
