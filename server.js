@@ -710,13 +710,17 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
 }
 
 // ========================================
-// SEGMENTACIÓN INTELIGENTE - FUNCIÓN MEJORADA CON FALLBACK
+// SEGMENTACIÓN INTELIGENTE - FUNCIÓN CORREGIDA
 // ========================================
 
 /**
- * Obtener tokens con segmentación INTELIGENTE
+ * Obtener tokens con segmentación INTELIGENTE (CORREGIDO)
+ * 
+ * 🔑 BUG FIX: Si hay entidades en la segmentación, saltar Estrategia 1
+ * porque las entidades NO se guardan en preferencias, solo en eventos.
+ * 
  * Busca usuarios basándose en:
- * - Preferencias guardadas (método original)
+ * - Preferencias guardadas (método original) - SOLO si NO hay entidades
  * - Pueblos que han visitado (pueblo_view events)
  * - Categorías que han visto (category_view, category_clicked events)
  * - ENTIDADES/SITIOS con los que han interactuado (entity_clicked events)
@@ -726,40 +730,57 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
 async function getTokensWithSegmentation(segmentation = {}) {
   console.log('🎯 getTokensWithSegmentation llamada con:', JSON.stringify(segmentation));
   
+  // 🔑 IMPORTANTE: Detectar si hay entidades en la segmentación
+  // Si hay entidades, debemos saltar la Estrategia 1 porque las entidades
+  // NO se guardan en preferencias, solo en eventos
+  const tieneEntidades = segmentation.entidades && segmentation.entidades.length > 0;
+  
+  if (tieneEntidades) {
+    console.log('🏢 Detectadas entidades en segmentación, saltando Estrategia 1 (preferencias)');
+  }
+  
+  let devices = [];
+  
   // ESTRATEGIA 1: Buscar por preferencias guardadas (método original)
-  const query = { activo: true };
-  
-  if (segmentation.pueblos && segmentation.pueblos.length > 0) {
-    query['preferencias.pueblos_interes'] = { $in: segmentation.pueblos };
+  // 🔑 CORRECCIÓN: Solo ejecutar si NO hay entidades en la segmentación
+  if (!tieneEntidades) {
+    const query = { activo: true };
+    
+    if (segmentation.pueblos && segmentation.pueblos.length > 0) {
+      query['preferencias.pueblos_interes'] = { $in: segmentation.pueblos };
+    }
+    
+    if (segmentation.categorias && segmentation.categorias.length > 0) {
+      query['preferencias.categorias_interes'] = { $in: segmentation.categorias };
+    }
+    
+    if (segmentation.device_type) {
+      query.device_type = segmentation.device_type;
+    }
+    
+    if (segmentation.active_in_days) {
+      const date = new Date();
+      date.setDate(date.getDate() - segmentation.active_in_days);
+      query.ultimo_acceso = { $gte: date };
+    }
+    
+    if (segmentation.new_users_only) {
+      const date = new Date();
+      date.setDate(date.getDate() - segmentation.new_users_only);
+      query.fecha_registro = { $gte: date };
+    }
+    
+    // Buscar por preferencias guardadas
+    devices = await deviceTokensCollection.find(query).toArray();
+    console.log(`📊 Usuarios encontrados por preferencias guardadas: ${devices.length}`);
+  } else {
+    console.log('⏭️ Estrategia 1 omitida porque hay entidades en la segmentación');
   }
   
-  if (segmentation.categorias && segmentation.categorias.length > 0) {
-    query['preferencias.categorias_interes'] = { $in: segmentation.categorias };
-  }
-  
-  if (segmentation.device_type) {
-    query.device_type = segmentation.device_type;
-  }
-  
-  if (segmentation.active_in_days) {
-    const date = new Date();
-    date.setDate(date.getDate() - segmentation.active_in_days);
-    query.ultimo_acceso = { $gte: date };
-  }
-  
-  if (segmentation.new_users_only) {
-    const date = new Date();
-    date.setDate(date.getDate() - segmentation.new_users_only);
-    query.fecha_registro = { $gte: date };
-  }
-  
-  // Buscar por preferencias guardadas
-  let devices = await deviceTokensCollection.find(query).toArray();
-  console.log(`📊 Usuarios encontrados por preferencias guardadas: ${devices.length}`);
-  
-  // ESTRATEGIA 2: Si no encontramos usuarios por preferencias, buscar por ACTIVIDAD
-  if (devices.length === 0 && mongoDb) {
-    console.log('🔍 No se encontraron usuarios por preferencias, buscando por actividad...');
+  // ESTRATEGIA 2: Si no encontramos usuarios por preferencias O hay entidades, buscar por ACTIVIDAD
+  // 🔑 CORRECCIÓN: Agregar condición "|| tieneEntidades"
+  if ((devices.length === 0 || tieneEntidades) && mongoDb) {
+    console.log('🔍 Buscando usuarios por actividad en eventos...');
     
     const tokensPorActividad = new Set();
     
@@ -974,37 +995,67 @@ async function getTokensWithSegmentation(segmentation = {}) {
       const tokensArray = Array.from(tokensPorActividad);
       console.log(`📊 Total tokens únicos por actividad: ${tokensArray.length}`);
       
-      // Buscar en device_tokens
-      devices = await deviceTokensCollection.find({
-        token: { $in: tokensArray },
-        activo: true
-      }).toArray();
-      
-      console.log(`📊 Tokens en device_tokens: ${devices.length}`);
-      
-      // 🔑 CRÍTICO: Si no están en device_tokens, usar los tokens de eventos directamente
-      if (devices.length === 0) {
-        console.log('⚠️ Tokens NO registrados en device_tokens, usando tokens de eventos directamente');
-        devices = tokensArray.map(token => ({
-          token: token,
-          activo: true,
-          source: 'events_direct'
-        }));
-        console.log(`📊 Tokens de eventos utilizados directamente: ${devices.length}`);
-      } else if (devices.length < tokensArray.length) {
-        // Si algunos están registrados pero otros no, agregar los que faltan
-        const registeredTokens = new Set(devices.map(d => d.token));
-        const missingTokens = tokensArray.filter(t => !registeredTokens.has(t));
+      // Si ya teníamos dispositivos de la Estrategia 1, combinarlos
+      if (devices.length > 0 && !tieneEntidades) {
+        const existingTokens = new Set(devices.map(d => d.token));
+        const newTokens = tokensArray.filter(t => !existingTokens.has(t));
         
-        if (missingTokens.length > 0) {
-          console.log(`⚠️ Agregando ${missingTokens.length} tokens adicionales desde eventos`);
-          missingTokens.forEach(token => {
-            devices.push({
-              token: token,
-              activo: true,
-              source: 'events_fallback'
-            });
+        console.log(`📊 Combinando ${devices.length} de preferencias con ${newTokens.length} de actividad`);
+        
+        // Buscar info de los nuevos tokens
+        if (newTokens.length > 0) {
+          const additionalDevices = await deviceTokensCollection.find({
+            token: { $in: newTokens },
+            activo: true
+          }).toArray();
+          
+          // Agregar tokens que no están en device_tokens
+          const foundTokens = new Set(additionalDevices.map(d => d.token));
+          newTokens.forEach(token => {
+            if (!foundTokens.has(token)) {
+              devices.push({
+                token: token,
+                activo: true,
+                source: 'events_direct'
+              });
+            }
           });
+          
+          devices.push(...additionalDevices);
+        }
+      } else {
+        // Solo usar tokens de actividad
+        devices = await deviceTokensCollection.find({
+          token: { $in: tokensArray },
+          activo: true
+        }).toArray();
+        
+        console.log(`📊 Tokens en device_tokens: ${devices.length}`);
+        
+        // 🔑 CRÍTICO: Si no están en device_tokens, usar los tokens de eventos directamente
+        if (devices.length === 0) {
+          console.log('⚠️ Tokens NO registrados en device_tokens, usando tokens de eventos directamente');
+          devices = tokensArray.map(token => ({
+            token: token,
+            activo: true,
+            source: 'events_direct'
+          }));
+          console.log(`📊 Tokens de eventos utilizados directamente: ${devices.length}`);
+        } else if (devices.length < tokensArray.length) {
+          // Si algunos están registrados pero otros no, agregar los que faltan
+          const registeredTokens = new Set(devices.map(d => d.token));
+          const missingTokens = tokensArray.filter(t => !registeredTokens.has(t));
+          
+          if (missingTokens.length > 0) {
+            console.log(`⚠️ Agregando ${missingTokens.length} tokens adicionales desde eventos`);
+            missingTokens.forEach(token => {
+              devices.push({
+                token: token,
+                activo: true,
+                source: 'events_fallback'
+              });
+            });
+          }
         }
       }
     }
@@ -1355,7 +1406,7 @@ app.get('/api/health', (req, res) => {
     mongodb: mongoDb ? 'connected' : 'disconnected',
     firebaseAdmin: admin.apps.length > 0 ? 'initialized' : 'not initialized',
     firestore: firestoreDb ? 'initialized' : 'not initialized',
-    version: '5.5.0-segmentacion-con-fallback'
+    version: '5.6.0-segmentacion-entidades-fix'
   });
 });
 
@@ -3050,7 +3101,7 @@ app.post('/api/notifications/send', async (req, res) => {
     }
     
     if (!mongoDb) {
-      return res.json({ success: false, error: 'MongoDB no está conectado' });
+      return res.json({ success: false, error: 'MongoDB no está conectido' });
     }
     
     const { 
@@ -3267,7 +3318,7 @@ app.post('/api/notifications/recurring', async (req, res) => {
       return res.json({ success: false, error: 'MongoDB no está conectado' });
     }
     
-    const {
+    const{
       name,
       title,
       body,
@@ -3737,7 +3788,10 @@ app.post('/api/notifications/debug-segmentation', async (req, res) => {
     
     console.log('🔍 Debug de segmentación:', JSON.stringify(segmentation));
     
-    // ESTRATEGIA 1: Por preferencias guardadas
+    // 🔑 Detectar si hay entidades
+    const tieneEntidades = segmentation.entidades && segmentation.entidades.length > 0;
+    
+    // ESTRATEGIA 1: Por preferencias guardadas (solo si NO hay entidades)
     const query = { activo: true };
     
     if (segmentation.pueblos && segmentation.pueblos.length > 0) {
@@ -3748,7 +3802,10 @@ app.post('/api/notifications/debug-segmentation', async (req, res) => {
       query['preferencias.categorias_interes'] = { $in: segmentation.categorias };
     }
     
-    const devicesByPreferences = await deviceTokensCollection.find(query).toArray();
+    let devicesByPreferences = [];
+    if (!tieneEntidades) {
+      devicesByPreferences = await deviceTokensCollection.find(query).toArray();
+    }
     
     // ESTRATEGIA 2: Por actividad en eventos
     const tokensPorActividad = new Set();
@@ -3869,8 +3926,10 @@ app.post('/api/notifications/debug-segmentation', async (req, res) => {
       success: true,
       debug: {
         segmentation,
+        tieneEntidades,
         estrategia1_preferencias: {
           query,
+          ejecutada: !tieneEntidades,
           encontrados: devicesByPreferences.length,
           tokens: devicesByPreferences.slice(0, 5).map(d => d.token?.substring(0, 30) + '...')
         },
@@ -3882,13 +3941,16 @@ app.post('/api/notifications/debug-segmentation', async (req, res) => {
           eventos_categorias: eventosCategorias.length,
           eventos_entidades: eventosEntidades.length,
           tokens_unicos: tokensArray.length,
-          tokens_activos: devicesByActivity.length
+          tokens_activos: devicesByActivity.length,
+          tokens_ejemplo: tokensArray.slice(0, 3).map(t => t?.substring(0, 30) + '...')
         }
       },
       resumen: {
         total_por_preferencias: devicesByPreferences.length,
         total_por_actividad: devicesByActivity.length,
-        total_final: devicesByPreferences.length > 0 ? devicesByPreferences.length : devicesByActivity.length
+        total_final: tieneEntidades 
+          ? devicesByActivity.length 
+          : (devicesByPreferences.length > 0 ? devicesByPreferences.length : devicesByActivity.length)
       }
     });
     
@@ -3903,7 +3965,7 @@ app.post('/api/notifications/debug-segmentation', async (req, res) => {
 // ========================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Turisteando Analytics Server v5.5.0 (Segmentación con Fallback) running on port ${PORT}`);
+  console.log(`🚀 Turisteando Analytics Server v5.6.0 (Segmentación Entidades FIX) running on port ${PORT}`);
   console.log(`📊 Firebase Property ID: ${PROPERTY_ID}`);
   console.log(`🍃 MongoDB: ${mongoDb ? 'Conectado' : 'No configurado'}`);
   console.log(`🔔 Firebase Admin: ${admin.apps.length > 0 ? 'Inicializado' : 'No configurado'}`);
