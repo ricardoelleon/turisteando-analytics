@@ -3960,6 +3960,577 @@ app.post('/api/notifications/debug-segmentation', async (req, res) => {
   }
 });
 
+/**
+ * ============================================
+ * ENDPOINTS DE DIAGNÓSTICO MONGODB PARA TURISTEANDOAPP
+ * ============================================
+ * 
+ * ADAPTADO PARA: MongoDB Driver Nativo (MongoClient)
+ * 
+ * INSTRUCCIONES DE INSTALACIÓN:
+ * 
+ * 1. Agrega este código ANTES de app.listen() en tu servidor
+ * 2. La colección se llama 'events' según tu configuración
+ * 
+ * UBICACIÓN EN TU ARCHIVO:
+ * ────────────────────────────────────────
+ * // ... tu código existente ...
+ * 
+ * // ▼ PEGA AQUÍ LOS ENDPOINTS DE DIAGNÓSTICO ▼
+ * 
+ * app.listen(PORT, () => { ... });
+ * ────────────────────────────────────────
+ */
+
+// ==========================================
+// 1. GET /api/mongodb/debug/events-status
+// Verifica el estado general de los eventos en MongoDB
+// INCLUYE DETECCIÓN DE TTL Y CAPPED COLLECTION
+// ==========================================
+app.get('/api/mongodb/debug/events-status', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+
+    const collection = mongoDb.collection('events');
+
+    // Obtener estadísticas de la colección
+    let stats;
+    try {
+      stats = await collection.stats();
+    } catch (e) {
+      stats = { error: e.message };
+    }
+
+    // Obtener información sobre si es capped collection
+    const collectionsInfo = await mongoDb.listCollections({ name: 'events' }).toArray();
+    const collectionOptions = collectionsInfo[0]?.options || {};
+    const isCapped = collectionOptions.capped || false;
+    const cappedSize = collectionOptions.size || null;
+    const cappedMax = collectionOptions.max || null;
+
+    // Obtener TODOS los índices para verificar TTL
+    const indexes = await collection.indexes();
+    
+    // Filtrar índices TTL (tienen expireAfterSeconds)
+    const ttlIndexes = indexes.filter(idx => idx.expireAfterSeconds !== undefined);
+
+    // Total de documentos
+    const totalDocuments = await collection.countDocuments();
+
+    // Documentos por día (últimos 7 días)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const documentsByDay = await collection.aggregate([
+      {
+        $match: {
+          server_time: { $gte: sevenDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: '$date',
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { _id: -1 }
+      }
+    ]).toArray();
+
+    // Documentos por tipo de evento
+    const documentsByType = await collection.aggregate([
+      {
+        $group: {
+          _id: '$event_name',
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { count: -1 }
+      },
+      {
+        $limit: 15
+      }
+    ]).toArray();
+
+    // Determinar alertas
+    const alerts = [];
+    
+    if (isCapped) {
+      alerts.push({
+        level: 'ERROR',
+        message: `⚠️ LA COLECCIÓN ES CAPPED (tiene límite fijo)`,
+        details: `Máximo: ${cappedMax || 'No definido'} documentos, Tamaño: ${cappedSize ? (cappedSize / 1024 / 1024).toFixed(2) + ' MB' : 'No definido'}`,
+        impact: 'Los documentos antiguos se eliminan automáticamente cuando se alcanza el límite'
+      });
+    }
+
+    if (ttlIndexes.length > 0) {
+      ttlIndexes.forEach(idx => {
+        alerts.push({
+          level: 'ERROR',
+          message: `⚠️ ÍNDICE TTL DETECTADO: ${idx.name}`,
+          details: `Expira después de ${idx.expireAfterSeconds} segundos (${(idx.expireAfterSeconds / 86400).toFixed(1)} días)`,
+          impact: 'Los documentos se eliminan automáticamente después del tiempo configurado'
+        });
+      });
+    }
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      collection: {
+        name: 'events',
+        totalDocuments,
+        isCapped,
+        cappedSettings: isCapped ? { 
+          size: cappedSize, 
+          maxSizeMB: cappedSize ? (cappedSize / 1024 / 1024).toFixed(2) : null,
+          max: cappedMax 
+        } : null
+      },
+      indexes: {
+        total: indexes.length,
+        all: indexes.map(i => ({
+          name: i.name,
+          key: i.key,
+          isTTL: i.expireAfterSeconds !== undefined,
+          expireAfterSeconds: i.expireAfterSeconds,
+          expireAfterDays: i.expireAfterSeconds ? (i.expireAfterSeconds / 86400).toFixed(1) : null
+        })),
+        ttlIndexes: ttlIndexes.length > 0 ? ttlIndexes : 'No hay índices TTL'
+      },
+      storageStats: {
+        size: stats.size,
+        sizeMB: stats.size ? (stats.size / 1024 / 1024).toFixed(2) : null,
+        storageSize: stats.storageSize,
+        totalIndexSize: stats.totalIndexSize
+      },
+      documentsByDay,
+      documentsByType,
+      alerts,
+      conclusion: alerts.length > 0 
+        ? `🚨 PROBLEMA DETECTADO: ${alerts.length} alerta(s) explican por qué se pierden eventos`
+        : '✅ No se detectaron problemas de configuración en la colección'
+    });
+
+  } catch (error) {
+    console.error('❌ Error en /api/mongodb/debug/events-status:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ==========================================
+// 2. GET /api/mongodb/debug/recent-errors
+// Verifica errores y problemas en los eventos recientes
+// ==========================================
+app.get('/api/mongodb/debug/recent-errors', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+
+    const collection = mongoDb.collection('events');
+
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+
+    // Eventos sin device_token
+    const countWithoutToken = await collection.countDocuments({
+      $or: [
+        { 'data.device_token': { $exists: false } },
+        { 'data.device_token': null },
+        { 'data.device_token': '' }
+      ]
+    });
+
+    // Eventos en los últimos 3 días
+    const recentEventsCount = await collection.countDocuments({
+      server_time: { $gte: threeDaysAgo }
+    });
+
+    // Último evento recibido
+    const lastEvent = await collection.findOne({}, { sort: { server_time: -1 } });
+
+    // Eventos con errores de datos (campos faltantes)
+    const eventsWithMissingData = await collection.find({
+      $or: [
+        { event_name: { $exists: false } },
+        { server_time: { $exists: false } }
+      ]
+    }).sort({ server_time: -1 }).limit(10).toArray();
+
+    // Conteo de eventos por hora (últimas 24 horas)
+    const yesterday = new Date();
+    yesterday.setHours(yesterday.getHours() - 24);
+
+    const eventsByHour = await collection.aggregate([
+      {
+        $match: {
+          server_time: { $gte: yesterday }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: '%Y-%m-%d %H:00', date: '$server_time' }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { _id: 1 }
+      }
+    ]).toArray();
+
+    // Eventos por día
+    const eventsByDay = await collection.aggregate([
+      {
+        $match: {
+          server_time: { $gte: threeDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: '$date',
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { _id: -1 }
+      }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      summary: {
+        totalEventsWithoutToken: countWithoutToken,
+        recentEventsCount,
+        lastEventReceived: lastEvent ? {
+          time: lastEvent.server_time,
+          event_name: lastEvent.event_name,
+          hace: lastEvent.server_time 
+            ? Math.floor((Date.now() - new Date(lastEvent.server_time).getTime()) / 1000 / 60) + ' minutos'
+            : 'N/A'
+        } : null
+      },
+      eventsWithMissingData: eventsWithMissingData.length,
+      eventsByHour,
+      eventsByDay,
+      warnings: [
+        countWithoutToken > 0 
+          ? `⚠️ Hay ${countWithoutToken} eventos sin device_token` 
+          : null,
+        eventsWithMissingData.length > 0 
+          ? `⚠️ Hay ${eventsWithMissingData.length} eventos con campos faltantes` 
+          : null,
+        recentEventsCount === 0 
+          ? `⚠️ No hay eventos en los últimos 3 días - POSIBLE PROBLEMA DE CONEXIÓN` 
+          : null
+      ].filter(Boolean)
+    });
+
+  } catch (error) {
+    console.error('❌ Error en /api/mongodb/debug/recent-errors:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ==========================================
+// 3. GET /api/mongodb/debug/connection
+// Verifica el estado de la conexión a MongoDB
+// ==========================================
+app.get('/api/mongodb/debug/connection', async (req, res) => {
+  try {
+    if (!mongoClient) {
+      return res.json({ 
+        success: false, 
+        error: 'MongoClient no está inicializado',
+        suggestion: 'Verifica la variable de entorno MONGODB_URI'
+      });
+    }
+
+    // Intentar un ping a la base de datos
+    let pingResult = null;
+    try {
+      pingResult = await mongoDb.admin().ping();
+    } catch (pingError) {
+      pingResult = { error: pingError.message };
+    }
+
+    // Información del servidor MongoDB
+    let serverInfo = null;
+    try {
+      serverInfo = await mongoDb.admin().serverInfo();
+    } catch (infoError) {
+      serverInfo = { error: infoError.message };
+    }
+
+    // Estado de la conexión
+    const isConnected = mongoClient && mongoClient.isConnected ? 
+      (typeof mongoClient.isConnected === 'function' ? mongoClient.isConnected() : true) : 
+      !!mongoDb;
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      connection: {
+        isConnected,
+        database: mongoDb ? mongoDb.databaseName : null,
+        url: MONGO_URI ? MONGO_URI.replace(/\/\/([^:]+):([^@]+)@/, '//$1:****@') : null
+      },
+      ping: pingResult,
+      serverInfo: serverInfo ? {
+        version: serverInfo.version,
+        uptime: serverInfo.uptime,
+        host: serverInfo.host
+      } : null
+    });
+
+  } catch (error) {
+    console.error('❌ Error en /api/mongodb/debug/connection:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ==========================================
+// 4. VERSIÓN MEJORADA DEL ENDPOINT POST /api/mongodb/event
+// Agrega logging detallado para detectar problemas
+// ==========================================
+
+// Variable global para contar eventos (para diagnóstico)
+let eventCounter = 0;
+let errorCounter = 0;
+
+app.post('/api/mongodb/event', async (req, res) => {
+  const startTime = Date.now();
+  eventCounter++;
+  const eventId = eventCounter;
+
+  // ==========================================
+  // LOG DETALLADO DE RECEPCIÓN
+  // ==========================================
+  console.log(`\n${'═'.repeat(60)}`);
+  console.log(`📥 [${new Date().toISOString()}] EVENTO #${eventId} RECIBIDO`);
+  console.log(`   IP: ${req.ip || req.connection?.remoteAddress || 'unknown'}`);
+  console.log(`   Body:`, JSON.stringify(req.body).substring(0, 200));
+  console.log('═'.repeat(60));
+
+  try {
+    if (!mongoDb) {
+      errorCounter++;
+      console.error(`❌ [${eventId}] MongoDB no está conectado`);
+      return res.json({ 
+        success: false, 
+        error: 'MongoDB no está conectado',
+        note: 'Agrega MONGODB_URI en las variables de entorno de Render'
+      });
+    }
+
+    const { event_name, timestamp, data } = req.body;
+
+    if (!event_name) {
+      errorCounter++;
+      console.error(`❌ [${eventId}] Error: event_name es requerido`);
+      return res.json({ success: false, error: 'event_name es requerido' });
+    }
+
+    // ==========================================
+    // PREPARAR DOCUMENTO
+    // ==========================================
+    const eventDocument = {
+      event_name,
+      timestamp: timestamp || Date.now(),
+      data: data || {},
+      server_time: new Date(),
+      date: new Date().toISOString().split('T')[0],
+      _debug_id: eventId
+    };
+
+    // ==========================================
+    // GUARDAR EN MONGODB
+    // ==========================================
+    const insertResult = await mongoDb.collection('events').insertOne(eventDocument);
+
+    const processingTime = Date.now() - startTime;
+
+    // ==========================================
+    // LOG DE ÉXITO
+    // ==========================================
+    console.log(`✅ [${eventId}] GUARDADO en ${(processingTime)}ms`);
+    console.log(`   MongoDB ID: ${insertResult.insertedId}`);
+    console.log(`   Evento: ${event_name}`);
+    console.log(`   Total eventos sesión: ${eventCounter}, Errores: ${errorCounter}`);
+    console.log(`${'═'.repeat(60)}\n`);
+
+    res.json({ 
+      success: true, 
+      message: 'Evento guardado en MongoDB',
+      event_name,
+      mongoId: insertResult.insertedId,
+      eventId,
+      processingTime
+    });
+
+  } catch (error) {
+    errorCounter++;
+    const processingTime = Date.now() - startTime;
+
+    // ==========================================
+    // LOG DE ERROR DETALLADO
+    // ==========================================
+    console.error(`\n${'═'.repeat(60)}`);
+    console.error(`❌ [${eventId}] ERROR AL GUARDAR (${processingTime}ms)`);
+    console.error(`   Error: ${error.message}`);
+    console.error(`   Stack: ${error.stack}`);
+    console.error(`   Total eventos sesión: ${eventCounter}, Errores: ${errorCounter}`);
+    console.error(`${'═'.repeat(60)}\n`);
+
+    res.json({ 
+      success: false, 
+      error: error.message,
+      eventId,
+      errorType: error.name
+    });
+  }
+});
+
+// ==========================================
+// 5. Endpoint para probar el guardado de eventos
+// ==========================================
+app.post('/api/mongodb/debug/test-event', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+
+    const testEvent = {
+      event_name: 'DEBUG_TEST_EVENT',
+      timestamp: Date.now(),
+      data: {
+        test: true,
+        source: 'debug_endpoint',
+        device_token: 'TEST_TOKEN_' + Date.now()
+      },
+      server_time: new Date(),
+      date: new Date().toISOString().split('T')[0]
+    };
+
+    const result = await mongoDb.collection('events').insertOne(testEvent);
+
+    console.log('✅ Evento de prueba insertado:', result.insertedId);
+
+    // Verificar que se guardó correctamente
+    const saved = await mongoDb.collection('events').findOne({ _id: result.insertedId });
+
+    res.json({
+      success: true,
+      message: 'Evento de prueba insertado correctamente',
+      insertedId: result.insertedId,
+      savedDocument: saved
+    });
+
+  } catch (error) {
+    console.error('❌ Error en evento de prueba:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ==========================================
+// 6. Contador de eventos en la sesión actual
+// ==========================================
+app.get('/api/mongodb/debug/session-stats', (req, res) => {
+  res.json({
+    success: true,
+    sessionStats: {
+      eventsReceived: eventCounter,
+      errors: errorCounter,
+      successRate: eventCounter > 0 ? ((eventCounter - errorCounter) / eventCounter * 100).toFixed(2) + '%' : 'N/A'
+    }
+  });
+});
+
+// ==========================================
+// 7. Contar eventos eliminados vs esperados
+// ==========================================
+app.get('/api/mongodb/debug/missing-events', async (req, res) => {
+  try {
+    if (!mongoDb) {
+      return res.json({ success: false, error: 'MongoDB no está conectado' });
+    }
+
+    // Contar eventos totales
+    const total = await mongoDb.collection('events').countDocuments();
+
+    // Eventos por día últimos 7 días
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const byDay = await mongoDb.collection('events').aggregate([
+      { $match: { server_time: { $gte: sevenDaysAgo } } },
+      { $group: { _id: '$date', count: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ]).toArray();
+
+    // Calcular promedio diario
+    const totalDays = byDay.length;
+    const totalEventsInPeriod = byDay.reduce((sum, d) => sum + d.count, 0);
+    const avgPerDay = totalDays > 0 ? Math.round(totalEventsInPeriod / totalDays) : 0;
+
+    // Verificar días con pocos eventos (posible pérdida)
+    const lowEventDays = byDay.filter(d => d.count < avgPerDay * 0.5);
+
+    res.json({
+      success: true,
+      analysis: {
+        totalEventsNow: total,
+        eventsLast7Days: totalEventsInPeriod,
+        avgPerDay,
+        daysWithLowEvents: lowEventDays.length,
+        lowEventDays: lowEventDays,
+        expectedTotal: totalEventsInPeriod + (7 - totalDays) * avgPerDay,
+        possibleMissingEvents: Math.max(0, (7 * avgPerDay) - totalEventsInPeriod)
+      },
+      byDay,
+      alert: lowEventDays.length > 0 
+        ? `⚠️ Hay ${lowEventDays.length} día(s) con menos eventos de lo esperado`
+        : null
+    });
+
+  } catch (error) {
+    console.error('Error en missing-events:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+console.log('');
+console.log('✅ Endpoints de diagnóstico MongoDB cargados correctamente');
+console.log('   📊 GET  /api/mongodb/debug/events-status    - Verificar TTL/Capped');
+console.log('   📊 GET  /api/mongodb/debug/recent-errors    - Errores recientes');
+console.log('   📊 GET  /api/mongodb/debug/connection      - Estado conexión');
+console.log('   📊 POST /api/mongodb/debug/test-event      - Probar guardado');
+console.log('   📊 GET  /api/mongodb/debug/session-stats   - Stats de sesión');
+console.log('   📊 GET  /api/mongodb/debug/missing-events  - Eventos faltantes');
+console.log('');
+
+
+
 // ========================================
 // INICIAR SERVIDOR
 // ========================================
