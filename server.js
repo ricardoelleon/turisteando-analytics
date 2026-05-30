@@ -669,14 +669,21 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
         },
         priority: 'high',
       },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+          },
+        },
+      },
     };
 
-    // ✅ IMAGEN PARA IOS - Configuración correcta
+    // ✅ IMAGEN THUMBNAIL (como YouTube)
     if (notification.image) {
-      // Para Android
-      message.notification.imageUrl = notification.image;
+      // Android: imagen como thumbnail
+      message.android.notification.image = notification.image;
       
-      // Para iOS - APNS con mutable-content
+      // iOS: mutable-content para que la extensión procese
       message.apns = {
         payload: {
           aps: {
@@ -684,12 +691,9 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
             sound: 'default',
           },
         },
-        fcmOptions: {
-          imageUrl: notification.image,
-        },
       };
       
-      // También incluir en data para la Notification Service Extension
+      // Imagen en data para Notification Service Extension
       message.data.image = notification.image;
     }
 
