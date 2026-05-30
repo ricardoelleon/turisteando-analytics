@@ -671,8 +671,26 @@ async function sendNotificationToTokens(tokens, notification, actionData = {}) {
       },
     };
 
+    // ✅ IMAGEN PARA IOS - Configuración correcta
     if (notification.image) {
+      // Para Android
       message.notification.imageUrl = notification.image;
+      
+      // Para iOS - APNS con mutable-content
+      message.apns = {
+        payload: {
+          aps: {
+            'mutable-content': 1,
+            sound: 'default',
+          },
+        },
+        fcmOptions: {
+          imageUrl: notification.image,
+        },
+      };
+      
+      // También incluir en data para la Notification Service Extension
+      message.data.image = notification.image;
     }
 
     try {
