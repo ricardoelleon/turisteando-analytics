@@ -2587,22 +2587,25 @@ app.get('/api/mongodb/dashboard', async (req, res) => {
       mongoDb.collection('events').aggregate([
         { $match: { 
           server_time: { $gte: startDate },
-          event_name: { $in: ['entity_action', 'abrir_mapa', 'abrir_informacion', 'social_network_open', 'whatsapp_open', 'phone_call', 'share'] }
+          event_name: { $in: ['entity_action', 'abrir_mapa', 'abrir_informacion', 'social_network_open', 'whatsapp_open', 'phone_call', 'share', 'favorite_toggled', 'favorito_agregado', 'favorito_eliminado'] }
         }},
-        { $project: {
-          action: {
-            $switch: {
-              branches: [
-                { case: { $eq: ['$event_name', 'abrir_mapa'] }, then: 'abrir_mapa' },
-                { case: { $eq: ['$event_name', 'abrir_informacion'] }, then: 'abrir_web' },
-                { case: { $eq: ['$event_name', 'social_network_open'] }, then: { $concat: ['ver_', { $toLower: '$data.network' }] } },
-                { case: { $eq: ['$event_name', 'whatsapp_open'] }, then: 'whatsapp' },
-                { case: { $eq: ['$event_name', 'phone_call'] }, then: 'llamar' },
-                { case: { $eq: ['$event_name', 'share'] }, then: 'compartir' }
-              ],
-              default: { $toLower: '$data.action' }
-            }
-          },
+         { $project: {
+    action: {
+      $switch: {
+        branches: [
+          { case: { $eq: ['$event_name', 'abrir_mapa'] }, then: 'abrir_mapa' },
+          { case: { $eq: ['$event_name', 'abrir_informacion'] }, then: 'abrir_web' },
+          { case: { $eq: ['$event_name', 'social_network_open'] }, then: { $concat: ['ver_', { $toLower: '$data.network' }] } },
+          { case: { $eq: ['$event_name', 'whatsapp_open'] }, then: 'whatsapp' },
+          { case: { $eq: ['$event_name', 'phone_call'] }, then: 'llamar' },
+          { case: { $eq: ['$event_name', 'share'] }, then: 'compartir' },
+          { case: { $eq: ['$event_name', 'favorite_toggled'] }, then: 'favorito' },
+          { case: { $eq: ['$event_name', 'favorito_agregado'] }, then: 'favorito_agregado' },
+          { case: { $eq: ['$event_name', 'favorito_eliminado'] }, then: 'favorito_eliminado' }
+        ],
+        default: { $toLower: '$data.action' }
+      }
+    },
           entity: '$data.entity_name',
           categoria: { $toLower: { $ifNull: ['$data.category_name', '$data.category_id'] } },
           pueblo: { $toLower: { $ifNull: ['$data.pueblo_nombre', '$data.pueblo_id', '$data.origen'] } }
